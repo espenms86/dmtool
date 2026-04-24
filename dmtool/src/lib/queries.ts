@@ -1,0 +1,358 @@
+import { supabase } from "./supabaseClient";
+import type { Campaign, Note, Session, Tag, NoteWithTags } from "./types";
+
+export async function getCampaigns(): Promise<Campaign[]> {
+  const { data, error } = await supabase.from("campaigns").select("*");
+  if (error) {
+    console.error("getCampaigns error", error);
+    return [];
+  }
+  return data ?? [];
+}
+
+export async function createCampaign(name: string, description?: string): Promise<Campaign | null> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("createCampaign error: not signed in");
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("campaigns")
+    .insert({ name, description, user_id: user.id })
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("createCampaign error", error);
+    return null;
+  }
+
+  return data;
+}
+
+export async function createSession(campaignId: string, name: string): Promise<Session | null> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("createSession error: not signed in");
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("sessions")
+    .insert({ campaign_id: campaignId, user_id: user.id, name })
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("createSession error", error);
+    return null;
+  }
+
+  return data;
+}
+
+export async function getCampaignById(campaignId: string): Promise<Campaign | null> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("getCampaignById error: not signed in", { campaignId });
+    return null;
+  }
+
+  console.debug("getCampaignById", { campaignId, userId: user.id });
+
+  const { data, error } = await supabase
+    .from("campaigns")
+    .select("*")
+    .eq("id", campaignId)
+    .eq("user_id", user.id)
+    .single();
+
+  if (error) {
+    console.error("getCampaignById error", error, { campaignId, userId: user.id });
+    return null;
+  }
+  return data;
+}
+
+export async function updateCampaignIngameTime(campaignId: string, ingame_hour: number | null, ingame_minute: number | null, ingame_day: number | null): Promise<boolean> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("updateCampaignIngameTime error: not signed in", { campaignId });
+    return false;
+  }
+
+  const { data, error } = await supabase
+    .from("campaigns")
+    .update({ ingame_hour, ingame_minute, ingame_day })
+    .eq("id", campaignId)
+    .eq("user_id", user.id)
+    .select();
+
+  if (error) {
+    console.error("updateCampaignIngameTime error", error, { campaignId, userId: user.id, data });
+    return false;
+  }
+  return true;
+}
+
+export async function getSessionsByCampaign(campaignId: string): Promise<Session[]> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("getSessionsByCampaign error: not signed in");
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("sessions")
+    .select("*")
+    .eq("campaign_id", campaignId)
+    .eq("user_id", user.id);
+  if (error) {
+    console.error("getSessionsByCampaign error", error);
+    return [];
+  }
+  return data ?? [];
+}
+
+export async function getSessionById(sessionId: string): Promise<Session | null> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("getSessionById error: not signed in", { sessionId });
+    return null;
+  }
+
+  console.debug("getSessionById", { sessionId, userId: user.id });
+
+  const { data, error } = await supabase
+    .from("sessions")
+    .select("*")
+    .eq("id", sessionId)
+    .eq("user_id", user.id)
+    .single();
+
+  if (error) {
+    console.error("getSessionById error", error, { sessionId, userId: user.id });
+    return null;
+  }
+  return data;
+}
+
+export async function getNotesBySession(sessionId: string): Promise<NoteWithTags[]> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("getNotesBySession error: not signed in", { sessionId });
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("notes")
+    .select("*, note_tags(tags(*))")
+    .eq("session_id", sessionId)
+    .eq("user_id", user.id);
+
+  if (error) {
+    console.error("getNotesBySession error", error, { sessionId, userId: user.id });
+    return [];
+  }
+  return data ?? [];
+}
+
+export async function createNote(
+  campaignId: string,
+  sessionId: string,
+  title: string,
+  content?: string,
+  tagNames?: string[]
+): Promise<Note | null> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("createNote error: not signed in");
+    return null;
+  }
+
+  // Create the note
+  const { data: note, error: noteError } = await supabase
+    .from("notes")
+    .insert({
+      campaign_id: campaignId,
+      session_id: sessionId,
+      user_id: user.id,
+      title,
+      content,
+    })
+    .select("*")
+    .single();
+
+  if (noteError) {
+    console.error("createNote error", noteError);
+    return null;
+  }
+
+  // Handle tags if provided
+  if (tagNames && tagNames.length > 0) {
+    const uniqueTagNames = [...new Set(tagNames.map(name => name.trim()).filter(name => name))];
+    if (uniqueTagNames.length > 0) {
+      // Get or create tags
+      const tagIds = await getOrCreateTags(uniqueTagNames, user.id);
+      // Create note_tags
+      if (tagIds.length > 0) {
+        const noteTags = tagIds.map(tagId => ({ note_id: note.id, tag_id: tagId }));
+        const { error: ntError } = await supabase.from("note_tags").insert(noteTags);
+        if (ntError) {
+          console.error("createNote note_tags error", ntError);
+          // Note: note is still created, just without tags
+        }
+      }
+    }
+  }
+
+  return note;
+}
+
+export async function updateNote(noteId: string, content: string, tagNames?: string[]): Promise<Note | null> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("updateNote error: not signed in");
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("notes")
+    .update({ content })
+    .eq("id", noteId)
+    .eq("user_id", user.id)
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("updateNote error", error);
+    return null;
+  }
+
+  // Handle tags if provided
+  if (tagNames !== undefined) {
+    const uniqueTagNames = [...new Set(tagNames.map(name => name.trim()).filter(name => name))];
+    // Get or create tags
+    const tagIds = await getOrCreateTags(uniqueTagNames, user.id);
+    // Delete existing note_tags
+    await supabase.from("note_tags").delete().eq("note_id", noteId);
+    // Create new note_tags
+    if (tagIds.length > 0) {
+      const noteTags = tagIds.map(tagId => ({ note_id: noteId, tag_id: tagId }));
+      const { error: ntError } = await supabase.from("note_tags").insert(noteTags);
+      if (ntError) {
+        console.error("updateNote note_tags error", ntError);
+      }
+    }
+  }
+
+  return data;
+}
+
+export async function deleteNote(noteId: string): Promise<boolean> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("deleteNote error: not signed in");
+    return false;
+  }
+
+  const { error } = await supabase
+    .from("notes")
+    .delete()
+    .eq("id", noteId)
+    .eq("user_id", user.id);
+
+  if (error) {
+    console.error("deleteNote error", error);
+    return false;
+  }
+
+  return true;
+}
+
+async function getOrCreateTags(tagNames: string[], userId: string): Promise<string[]> {
+  // First, get existing tags
+  const { data: existingTags, error: getError } = await supabase
+    .from("tags")
+    .select("id, name")
+    .eq("user_id", userId)
+    .in("name", tagNames);
+
+  if (getError) {
+    console.error("getOrCreateTags get error", getError);
+    return [];
+  }
+
+  const existingMap = new Map(existingTags?.map(tag => [tag.name, tag.id]) || []);
+  const existingNames = new Set(existingMap.keys());
+  const newNames = tagNames.filter(name => !existingNames.has(name));
+
+  if (newNames.length > 0) {
+    // Create new tags
+    const newTags = newNames.map(name => ({ name, user_id: userId }));
+    const { data: createdTags, error: createError } = await supabase
+      .from("tags")
+      .insert(newTags)
+      .select("id, name");
+
+    if (createError) {
+      console.error("getOrCreateTags create error", createError);
+    } else {
+      createdTags?.forEach(tag => existingMap.set(tag.name, tag.id));
+    }
+  }
+
+  return tagNames.map(name => existingMap.get(name)!).filter(Boolean);
+}
+
+export async function getNotesByCampaign(campaignId: string): Promise<NoteWithTags[]> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("getNotesByCampaign error: not signed in", { campaignId });
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("notes")
+    .select("*, note_tags(tags(*))")
+    .eq("campaign_id", campaignId)
+    .eq("user_id", user.id);
+
+  if (error) {
+    console.error("getNotesByCampaign error", error, { campaignId, userId: user.id });
+    return [];
+  }
+  return data ?? [];
+}
+
+export async function getTagsByUser(): Promise<Tag[]> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("getTagsByUser error: not signed in");
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("tags")
+    .select("*")
+    .eq("user_id", user.id);
+
+  if (error) {
+    console.error("getTagsByUser error", error);
+    return [];
+  }
+  return data ?? [];
+}
