@@ -1,5 +1,32 @@
 import { supabase } from "./supabaseClient";
-import type { Campaign, Note, Session, Tag, NoteWithTags } from "./types";
+import type { Campaign, CampaignCalendar, Note, Session, Tag, NoteWithTags } from "./types";
+
+const DEFAULT_CALENDAR = {
+  name: "Realm Calendar",
+  months: [
+    "Dawnrise",
+    "Suncrest",
+    "Bloomtide",
+    "Emberwake",
+    "Highsun",
+    "Goldleaf",
+    "Harvestfall",
+    "Mistmere",
+    "Stormcall",
+    "Frostveil",
+    "Nightwane",
+    "Starfire",
+  ],
+  weekdays: [
+    "Moonday",
+    "Earthday",
+    "Windday",
+    "Fireday",
+    "Starday",
+    "Seaday",
+    "Sundawn",
+  ],
+};
 
 export async function getCampaigns(): Promise<Campaign[]> {
   const { data, error } = await supabase.from("campaigns").select("*");
@@ -29,7 +56,78 @@ export async function createCampaign(name: string, description?: string): Promis
     return null;
   }
 
+  await createDefaultCampaignCalendar(data.id, user.id);
+
   return data;
+}
+
+async function createDefaultCampaignCalendar(campaignId: string, userId: string): Promise<void> {
+  const { data: existingCalendar, error: existingCalendarError } = await supabase
+    .from("campaign_calendars")
+    .select("id")
+    .eq("campaign_id", campaignId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (existingCalendarError) {
+    console.error("createDefaultCampaignCalendar existing calendar error", existingCalendarError, { campaignId, userId });
+    return;
+  }
+
+  if (existingCalendar) {
+    return;
+  }
+
+  const { data: calendar, error: calendarError } = await supabase
+    .from("campaign_calendars")
+    .insert({
+      campaign_id: campaignId,
+      user_id: userId,
+      name: DEFAULT_CALENDAR.name,
+      epoch_day_number: 1,
+      epoch_year: 1,
+      epoch_month_index: 1,
+      epoch_day_of_month: 1,
+      epoch_weekday_index: 1,
+    })
+    .select("id")
+    .single();
+
+  if (calendarError || !calendar) {
+    console.error("createDefaultCampaignCalendar calendar error", calendarError, { campaignId, userId });
+    return;
+  }
+
+  const { error: monthsError } = await supabase
+    .from("campaign_calendar_months")
+    .insert(
+      DEFAULT_CALENDAR.months.map((monthName, index) => ({
+        user_id: userId,
+        calendar_id: calendar.id,
+        sort_order: index + 1,
+        name: monthName,
+        days: 30,
+      }))
+    );
+
+  if (monthsError) {
+    console.error("createDefaultCampaignCalendar months error", monthsError, { campaignId, userId, calendarId: calendar.id });
+  }
+
+  const { error: weekdaysError } = await supabase
+    .from("campaign_calendar_weekdays")
+    .insert(
+      DEFAULT_CALENDAR.weekdays.map((weekdayName, index) => ({
+        user_id: userId,
+        calendar_id: calendar.id,
+        sort_order: index + 1,
+        name: weekdayName,
+      }))
+    );
+
+  if (weekdaysError) {
+    console.error("createDefaultCampaignCalendar weekdays error", weekdaysError, { campaignId, userId, calendarId: calendar.id });
+  }
 }
 
 export async function createSession(campaignId: string, name: string): Promise<Session | null> {
@@ -78,6 +176,37 @@ export async function getCampaignById(campaignId: string): Promise<Campaign | nu
   return data;
 }
 
+export async function getCampaignCalendar(campaignId: string): Promise<CampaignCalendar | null> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("getCampaignCalendar error: not signed in", { campaignId });
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("campaign_calendars")
+    .select("*, campaign_calendar_months(*), campaign_calendar_weekdays(*)")
+    .eq("campaign_id", campaignId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (error) {
+    console.error("getCampaignCalendar error", error, { campaignId, userId: user.id });
+    return null;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  return {
+    ...data,
+    campaign_calendar_months: [...(data.campaign_calendar_months ?? [])].sort((a, b) => a.sort_order - b.sort_order),
+    campaign_calendar_weekdays: [...(data.campaign_calendar_weekdays ?? [])].sort((a, b) => a.sort_order - b.sort_order),
+  };
+}
+
 export async function updateCampaignIngameTime(campaignId: string, ingame_hour: number | null, ingame_minute: number | null, ingame_day: number | null): Promise<boolean> {
   const userResult = await supabase.auth.getUser();
   const user = userResult.data.user;
@@ -100,6 +229,92 @@ export async function updateCampaignIngameTime(campaignId: string, ingame_hour: 
   return true;
 }
 
+export async function updateCampaignCalendarEpoch(
+  calendarId: string,
+  fields: {
+    epoch_day_number: number;
+    epoch_year: number;
+    epoch_month_index: number;
+    epoch_day_of_month: number;
+    epoch_weekday_index: number;
+  }
+): Promise<boolean> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("updateCampaignCalendarEpoch error: not signed in", { calendarId });
+    return false;
+  }
+
+  const { data, error } = await supabase
+    .from("campaign_calendars")
+    .update(fields)
+    .eq("id", calendarId)
+    .eq("user_id", user.id)
+    .select();
+
+  if (error) {
+    console.error("updateCampaignCalendarEpoch error", error, { calendarId, userId: user.id, data });
+    return false;
+  }
+  return true;
+}
+
+export async function updateCampaignCalendarMonth(
+  monthId: string,
+  fields: {
+    name: string;
+    days: number;
+  }
+): Promise<boolean> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("updateCampaignCalendarMonth error: not signed in", { monthId });
+    return false;
+  }
+
+  const { data, error } = await supabase
+    .from("campaign_calendar_months")
+    .update(fields)
+    .eq("id", monthId)
+    .eq("user_id", user.id)
+    .select();
+
+  if (error) {
+    console.error("updateCampaignCalendarMonth error", error, { monthId, userId: user.id, data });
+    return false;
+  }
+  return true;
+}
+
+export async function updateCampaignCalendarWeekday(
+  weekdayId: string,
+  fields: {
+    name: string;
+  }
+): Promise<boolean> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("updateCampaignCalendarWeekday error: not signed in", { weekdayId });
+    return false;
+  }
+
+  const { data, error } = await supabase
+    .from("campaign_calendar_weekdays")
+    .update(fields)
+    .eq("id", weekdayId)
+    .eq("user_id", user.id)
+    .select();
+
+  if (error) {
+    console.error("updateCampaignCalendarWeekday error", error, { weekdayId, userId: user.id, data });
+    return false;
+  }
+  return true;
+}
+
 export async function getSessionsByCampaign(campaignId: string): Promise<Session[]> {
   const userResult = await supabase.auth.getUser();
   const user = userResult.data.user;
@@ -112,7 +327,8 @@ export async function getSessionsByCampaign(campaignId: string): Promise<Session
     .from("sessions")
     .select("*")
     .eq("campaign_id", campaignId)
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
   if (error) {
     console.error("getSessionsByCampaign error", error);
     return [];
@@ -170,7 +386,15 @@ export async function createNote(
   sessionId: string,
   title: string,
   content?: string,
-  tagNames?: string[]
+  tagNames?: string[],
+  ingameSnapshot?: {
+    ingame_day: number | null;
+    ingame_hour: number | null;
+    ingame_minute: number | null;
+    ingame_end_day?: number | null;
+    ingame_end_hour?: number | null;
+    ingame_end_minute?: number | null;
+  }
 ): Promise<Note | null> {
   const userResult = await supabase.auth.getUser();
   const user = userResult.data.user;
@@ -188,6 +412,12 @@ export async function createNote(
       user_id: user.id,
       title,
       content,
+      ingame_day: ingameSnapshot?.ingame_day ?? null,
+      ingame_hour: ingameSnapshot?.ingame_hour ?? null,
+      ingame_minute: ingameSnapshot?.ingame_minute ?? null,
+      ingame_end_day: ingameSnapshot?.ingame_end_day ?? null,
+      ingame_end_hour: ingameSnapshot?.ingame_end_hour ?? null,
+      ingame_end_minute: ingameSnapshot?.ingame_end_minute ?? null,
     })
     .select("*")
     .single();

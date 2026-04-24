@@ -1,10 +1,10 @@
 'use client';
 
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { getSessionById, getSessionsByCampaign, getNotesBySession, createNote, updateNote, deleteNote, getTagsByUser, getNotesByCampaign, getCampaignById, updateCampaignIngameTime } from '@/lib/queries';
-import { supabase } from '@/lib/supabaseClient';
-import type { Session, NoteWithTags, Tag, Campaign } from '@/lib/types';
+import { getSessionById, getSessionsByCampaign, getNotesBySession, createNote, updateNote, deleteNote, getTagsByUser, getNotesByCampaign, getCampaignById, getCampaignCalendar, updateCampaignIngameTime } from '@/lib/queries';
+import type { Session, NoteWithTags, Tag, Campaign, CampaignCalendar } from '@/lib/types';
 
 export default function SessionDetailPage() {
   const params = useParams();
@@ -30,6 +30,13 @@ export default function SessionDetailPage() {
   const [searchMode, setSearchMode] = useState<'free' | 'text' | 'tags'>('free');
   const [searchScope, setSearchScope] = useState<'session' | 'campaign'>('session');
   const [campaignNotes, setCampaignNotes] = useState<NoteWithTags[]>([]);
+  const [campaignCalendar, setCampaignCalendar] = useState<CampaignCalendar | null>(null);
+  const [manualHour, setManualHour] = useState('');
+  const [manualMinute, setManualMinute] = useState('');
+  const [passYears, setPassYears] = useState('');
+  const [passDays, setPassDays] = useState('');
+  const [passHours, setPassHours] = useState('');
+  const [passMinutes, setPassMinutes] = useState('');
 
   const filteredNotes = (searchScope === 'session' ? notes : campaignNotes).filter((note) => {
     if (!searchQuery.trim()) return true;
@@ -135,42 +142,189 @@ export default function SessionDetailPage() {
     }
   };
 
+  const getFilteredTagSuggestions = (inputValue: string, currentTags: string) => {
+    const query = inputValue.trim().toLowerCase();
+    if (!query) return [];
+
+    const selectedTags = new Set(getTagList(currentTags).map((tag) => tag.toLowerCase()));
+    return availableTags.filter((tag) => {
+      const normalizedTagName = tag.name.toLowerCase();
+      return normalizedTagName.includes(query) && !selectedTags.has(normalizedTagName);
+    });
+  };
+
+  const formatIngameTimestamp = (note: NoteWithTags) => {
+    if (note.ingame_day == null || note.ingame_hour == null || note.ingame_minute == null) {
+      return null;
+    }
+
+    const startTime = `${String(note.ingame_hour).padStart(2, '0')}:${String(note.ingame_minute).padStart(2, '0')}`;
+
+    if (note.ingame_end_day == null || note.ingame_end_hour == null || note.ingame_end_minute == null) {
+      return `Day ${note.ingame_day} ${startTime}`;
+    }
+
+    const endTime = `${String(note.ingame_end_hour).padStart(2, '0')}:${String(note.ingame_end_minute).padStart(2, '0')}`;
+
+    if (note.ingame_day === note.ingame_end_day) {
+      return `Day ${note.ingame_day} from ${startTime} to ${endTime}`;
+    }
+
+    return `Day ${note.ingame_day} ${startTime} to Day ${note.ingame_end_day} ${endTime}`;
+  };
+
+  const deriveCalendarState = () => {
+    if (!campaign || !campaignCalendar || campaign.ingame_day == null) {
+      return null;
+    }
+
+    const months = campaignCalendar.campaign_calendar_months;
+    const weekdays = campaignCalendar.campaign_calendar_weekdays;
+    if (months.length === 0 || weekdays.length === 0) {
+      return null;
+    }
+
+    const deltaDays = campaign.ingame_day - campaignCalendar.epoch_day_number;
+    if (deltaDays < 0) {
+      return null;
+    }
+
+    let year = campaignCalendar.epoch_year;
+    let monthIndex = campaignCalendar.epoch_month_index - 1;
+    let dayOfMonth = campaignCalendar.epoch_day_of_month;
+
+    for (let i = 0; i < deltaDays; i += 1) {
+      dayOfMonth += 1;
+      const currentMonthDays = months[monthIndex]?.days;
+      if (!currentMonthDays) {
+        return null;
+      }
+      if (dayOfMonth > currentMonthDays) {
+        dayOfMonth = 1;
+        monthIndex += 1;
+        if (monthIndex >= months.length) {
+          monthIndex = 0;
+          year += 1;
+        }
+      }
+    }
+
+    const weekdayIndex = (campaignCalendar.epoch_weekday_index - 1 + deltaDays) % weekdays.length;
+    const weekdayName = weekdays[weekdayIndex]?.name;
+    const monthName = months[monthIndex]?.name;
+
+    if (!weekdayName || !monthName) {
+      return null;
+    }
+
+    return {
+      year,
+      monthIndex: monthIndex + 1,
+      dayOfMonth,
+      weekdayIndex: weekdayIndex + 1,
+      formatted: `${weekdayName}, Day ${dayOfMonth} of ${monthName}, Year ${year}`,
+    };
+  };
+
+  const refreshNotesState = async () => {
+    const notesData = await getNotesBySession(sessionId);
+    setNotes(notesData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
+
+    if (searchScope === 'campaign') {
+      const campaignNotesData = await getNotesByCampaign(campaignId);
+      setCampaignNotes(campaignNotesData);
+    }
+  };
+
   const handleCreateNote = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
 
+    const startDay = campaign?.ingame_day ?? 1;
+    const startHour = campaign?.ingame_hour ?? 0;
+    const startMinute = campaign?.ingame_minute ?? 0;
+    const daysPerYear = campaignCalendar?.campaign_calendar_months?.reduce((sum, month) => sum + month.days, 0) ?? 0;
+    const parsedPassYears = Number.parseInt(passYears, 10);
+    const parsedPassDays = Number.parseInt(passDays, 10);
+    const parsedPassHours = Number.parseInt(passHours, 10);
+    const parsedPassMinutes = Number.parseInt(passMinutes, 10);
+    const nextPassYears = Number.isNaN(parsedPassYears) || daysPerYear <= 0 ? 0 : Math.max(0, parsedPassYears);
+    const nextPassDays = Number.isNaN(parsedPassDays) ? 0 : Math.max(0, parsedPassDays);
+    const nextPassHours = Number.isNaN(parsedPassHours) ? 0 : Math.max(0, parsedPassHours);
+    const nextPassMinutes = Number.isNaN(parsedPassMinutes) ? 0 : Math.max(0, parsedPassMinutes);
+    const totalPassDays = nextPassYears * daysPerYear + nextPassDays;
+    const shouldPassTime = totalPassDays > 0 || nextPassHours > 0 || nextPassMinutes > 0;
+    const totalStartMinutes = startDay * 24 * 60 + startHour * 60 + startMinute;
+    const totalEndMinutes = totalStartMinutes + totalPassDays * 24 * 60 + nextPassHours * 60 + nextPassMinutes;
+    const endDay = Math.floor(totalEndMinutes / (24 * 60));
+    const endHour = Math.floor((totalEndMinutes % (24 * 60)) / 60);
+    const endMinute = totalEndMinutes % 60;
     const tagNames = tags.split(',').map(t => t.trim()).filter(t => t);
-    const newNote = await createNote(campaignId, sessionId, title.trim(), content.trim() || undefined, tagNames);
+    const newNote = await createNote(
+      campaignId,
+      sessionId,
+      title.trim(),
+      content.trim() || undefined,
+      tagNames,
+      {
+        ingame_day: startDay,
+        ingame_hour: startHour,
+        ingame_minute: startMinute,
+        ingame_end_day: shouldPassTime ? endDay : null,
+        ingame_end_hour: shouldPassTime ? endHour : null,
+        ingame_end_minute: shouldPassTime ? endMinute : null,
+      }
+    );
     if (newNote) {
+      if (shouldPassTime) {
+        await updateCampaignIngameTime(campaignId, endHour, endMinute, endDay);
+        await refreshCampaignState();
+      }
       // Reload notes and tags
-      const [notesData, tagsData] = await Promise.all([
-        getNotesBySession(sessionId),
-        getTagsByUser(),
-      ]);
-      setNotes(notesData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
+      const tagsData = await getTagsByUser();
+      await refreshNotesState();
       setAvailableTags(tagsData);
       // Clear form
       setTitle('');
       setContent('');
       setTags('');
       setNewTag('');
+      setPassYears('');
+      setPassDays('');
+      setPassHours('');
+      setPassMinutes('');
+    }
+  };
+
+  const refreshCampaignState = async () => {
+    const campaignData = await getCampaignById(campaignId);
+    setCampaign(campaignData);
+    if (campaignData) {
+      setManualHour(String(campaignData.ingame_hour ?? 0));
+      setManualMinute(String(campaignData.ingame_minute ?? 0));
     }
   };
 
   useEffect(() => {
     async function loadData() {
-      const [campaignData, sessionData, sessionsData, notesData, tagsData] = await Promise.all([
+      const [campaignData, campaignCalendarData, sessionData, sessionsData, notesData, tagsData] = await Promise.all([
         getCampaignById(campaignId),
+        getCampaignCalendar(campaignId),
         getSessionById(sessionId),
         getSessionsByCampaign(campaignId),
         getNotesBySession(sessionId),
         getTagsByUser(),
       ]);
       setCampaign(campaignData);
+      setCampaignCalendar(campaignCalendarData);
       setSession(sessionData);
       setSessions(sessionsData);
       setNotes(notesData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
       setAvailableTags(tagsData);
+      if (campaignData) {
+        setManualHour(String(campaignData.ingame_hour ?? 0));
+        setManualMinute(String(campaignData.ingame_minute ?? 0));
+      }
     }
     loadData();
   }, [campaignId, sessionId]);
@@ -185,42 +339,35 @@ export default function SessionDetailPage() {
     loadCampaignNotes();
   }, [searchScope, campaignId]);
 
-  const addMinutes = async (minutes: number) => {
+  const calendarState = deriveCalendarState();
+  const createTagSuggestions = getFilteredTagSuggestions(newTag, tags);
+  const editTagSuggestions = getFilteredTagSuggestions(editingNewTag, editingTags);
+
+  const setManualTime = async () => {
     if (!campaign) return;
+
     const currentHour = campaign.ingame_hour ?? 0;
     const currentMinute = campaign.ingame_minute ?? 0;
-    const totalMinutes = currentHour * 60 + currentMinute + minutes;
-    const newHour = Math.floor(totalMinutes / 60) % 24;
-    const newMinute = totalMinutes % 60;
-    const success = await updateCampaignIngameTime(campaignId, newHour, newMinute, campaign.ingame_day);
-    if (success) {
-      setCampaign({ ...campaign, ingame_hour: newHour, ingame_minute: newMinute });
-    }
-  };
+    const parsedHour = Number.parseInt(manualHour, 10);
+    const parsedMinute = Number.parseInt(manualMinute, 10);
+    const nextHour = Number.isNaN(parsedHour) ? currentHour : Math.min(23, Math.max(0, parsedHour));
+    const nextMinute = Number.isNaN(parsedMinute) ? currentMinute : Math.min(59, Math.max(0, parsedMinute));
 
-  const addHours = async (hours: number) => {
-    if (!campaign) return;
-    const currentHour = campaign.ingame_hour ?? 0;
-    const newHour = (currentHour + hours) % 24;
-    const success = await updateCampaignIngameTime(campaignId, newHour, campaign.ingame_minute ?? 0, campaign.ingame_day);
+    const success = await updateCampaignIngameTime(campaignId, nextHour, nextMinute, campaign.ingame_day);
     if (success) {
-      setCampaign({ ...campaign, ingame_hour: newHour });
-    }
-  };
-
-  const addDays = async (days: number) => {
-    if (!campaign) return;
-    const currentDay = campaign.ingame_day ?? 1;
-    const newDay = currentDay + days;
-    const success = await updateCampaignIngameTime(campaignId, campaign.ingame_hour, campaign.ingame_minute, newDay);
-    if (success) {
-      setCampaign({ ...campaign, ingame_day: newDay });
+      await refreshCampaignState();
     }
   };
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl space-y-6">
+        <Link
+          href={`/campaigns/${campaignId}`}
+          className="inline-block text-sm text-slate-500 hover:text-slate-700"
+        >
+          ← Back to campaign
+        </Link>
         <header className="rounded-xl bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -342,9 +489,9 @@ export default function SessionDetailPage() {
                       className="flex-1 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                     />
                   </div>
-                  {availableTags.length > 0 && (
+                  {createTagSuggestions.length > 0 && (
                     <div className="flex flex-wrap gap-2">
-                      {availableTags.map((tag) => (
+                      {createTagSuggestions.map((tag) => (
                         <button
                           key={tag.id}
                           type="button"
@@ -357,12 +504,69 @@ export default function SessionDetailPage() {
                     </div>
                   )}
                 </div>
-                <button
-                  type="submit"
-                  className="rounded bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700"
-                >
-                  Create note
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="submit"
+                    className="rounded bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700"
+                  >
+                    Create note
+                  </button>
+                  <span className="text-xs text-slate-500">Pass time:</span>
+                  <div className="flex items-center gap-1">
+                    <label htmlFor="pass-years" className="text-xs text-slate-500">
+                      Years
+                    </label>
+                    <input
+                      id="pass-years"
+                      type="number"
+                      min={0}
+                      value={passYears}
+                      onChange={(e) => setPassYears(e.target.value)}
+                      disabled={!campaignCalendar || campaignCalendar.campaign_calendar_months.length === 0}
+                      title={!campaignCalendar || campaignCalendar.campaign_calendar_months.length === 0 ? 'Requires calendar' : undefined}
+                      className="w-16 rounded border border-slate-200 bg-slate-50 px-2 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <label htmlFor="pass-days" className="text-xs text-slate-500">
+                      Days
+                    </label>
+                    <input
+                      id="pass-days"
+                      type="number"
+                      min={0}
+                      value={passDays}
+                      onChange={(e) => setPassDays(e.target.value)}
+                      className="w-16 rounded border border-slate-200 bg-slate-50 px-2 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <label htmlFor="pass-hours" className="text-xs text-slate-500">
+                      Hours
+                    </label>
+                    <input
+                      id="pass-hours"
+                      type="number"
+                      min={0}
+                      value={passHours}
+                      onChange={(e) => setPassHours(e.target.value)}
+                      className="w-16 rounded border border-slate-200 bg-slate-50 px-2 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <label htmlFor="pass-minutes" className="text-xs text-slate-500">
+                      Minutes
+                    </label>
+                    <input
+                      id="pass-minutes"
+                      type="number"
+                      min={0}
+                      value={passMinutes}
+                      onChange={(e) => setPassMinutes(e.target.value)}
+                      className="w-16 rounded border border-slate-200 bg-slate-50 px-2 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                </div>
               </form>
             </div>
 
@@ -389,6 +593,7 @@ export default function SessionDetailPage() {
                     const isEditing = editingNoteId === note.id;
                     const isFromDifferentSession = searchScope === 'campaign' && note.session_id !== sessionId;
                     const noteSession = sessions.find(s => s.id === note.session_id);
+                    const ingameTimestamp = formatIngameTimestamp(note);
                     return (
                       <div
                         key={note.id}
@@ -403,6 +608,11 @@ export default function SessionDetailPage() {
                               <h3 className={`text-sm font-semibold ${isFromDifferentSession ? 'text-blue-600' : 'text-slate-900'}`}>
                                 {note.title}
                               </h3>
+                              {ingameTimestamp && (
+                                <span className="text-sm font-bold text-slate-900">
+                                  {ingameTimestamp}
+                                </span>
+                              )}
                               {isFromDifferentSession && noteSession && (
                                 <button
                                   onClick={(e) => {
@@ -499,9 +709,9 @@ export default function SessionDetailPage() {
                                   className="flex-1 rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                                 />
                               </div>
-                              {availableTags.length > 0 && (
+                              {editTagSuggestions.length > 0 && (
                                 <div className="flex flex-wrap gap-2">
-                                  {availableTags.map((tag) => (
+                                  {editTagSuggestions.map((tag) => (
                                     <button
                                       key={tag.id}
                                       type="button"
@@ -560,6 +770,20 @@ export default function SessionDetailPage() {
                       </div>
                       <div className="text-sm text-slate-600">Date</div>
                     </div>
+                  ) : campaign.ingame_month && campaign.ingame_day ? (
+                    <div className="text-center">
+                      <div className="text-2xl font-mono font-bold text-slate-900">
+                        Month {campaign.ingame_month}, Day {campaign.ingame_day}
+                      </div>
+                      <div className="text-sm text-slate-600">Date</div>
+                    </div>
+                  ) : campaign.ingame_day ? (
+                    <div className="text-center">
+                      <div className="text-2xl font-mono font-bold text-slate-900">
+                        Day {campaign.ingame_day}
+                      </div>
+                      <div className="text-sm text-slate-600">Date</div>
+                    </div>
                   ) : (
                     <div className="text-center text-sm text-slate-500">No date set</div>
                   )}
@@ -573,29 +797,50 @@ export default function SessionDetailPage() {
                   ) : (
                     <div className="text-center text-sm text-slate-500">No time set</div>
                   )}
+                  {calendarState && (
+                    <div className="text-center text-sm text-slate-600">
+                      {calendarState.formatted}
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="text-center text-sm text-slate-500">Loading campaign clock...</div>
               )}
             </div>
-            <div className="mt-4 flex justify-center gap-2">
+            <div className="mt-4 flex items-end justify-center gap-2">
+              <div className="flex flex-col">
+                <label htmlFor="manual-hour" className="text-xs text-slate-500">
+                  Hour
+                </label>
+                <input
+                  id="manual-hour"
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={manualHour}
+                  onChange={(e) => setManualHour(e.target.value)}
+                  className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+              <div className="flex flex-col">
+                <label htmlFor="manual-minute" className="text-xs text-slate-500">
+                  Minute
+                </label>
+                <input
+                  id="manual-minute"
+                  type="number"
+                  min={0}
+                  max={59}
+                  value={manualMinute}
+                  onChange={(e) => setManualMinute(e.target.value)}
+                  className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
               <button
-                onClick={() => addMinutes(10)}
+                onClick={setManualTime}
                 className="rounded border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
               >
-                +10 min
-              </button>
-              <button
-                onClick={() => addHours(1)}
-                className="rounded border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
-              >
-                +1 hour
-              </button>
-              <button
-                onClick={() => addDays(1)}
-                className="rounded border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
-              >
-                +1 day
+                Set time
               </button>
             </div>
           </aside>

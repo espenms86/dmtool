@@ -36,12 +36,26 @@ create table if not exists notes (
   session_id uuid references sessions(id) on delete set null,
   title text not null,
   content text,
+  ingame_day integer,
+  ingame_hour integer,
+  ingame_minute integer,
+  ingame_end_day integer,
+  ingame_end_hour integer,
+  ingame_end_minute integer,
   in_game_date date,
   in_game_time time,
   in_game_note text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table notes
+  add column if not exists ingame_day integer,
+  add column if not exists ingame_hour integer,
+  add column if not exists ingame_minute integer,
+  add column if not exists ingame_end_day integer,
+  add column if not exists ingame_end_hour integer,
+  add column if not exists ingame_end_minute integer;
 
 create table if not exists tags (
   id uuid primary key default gen_random_uuid(),
