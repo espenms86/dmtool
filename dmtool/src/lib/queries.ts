@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient";
-import type { Campaign, CampaignCalendar, Note, Session, Tag, Npc, NoteWithTags } from "./types";
+import type { Campaign, CampaignCalendar, Note, Session, Tag, Npc, NoteWithTags, PlayerCharacter } from "./types";
 
 const DEFAULT_CALENDAR = {
   name: "Realm Calendar",
@@ -344,6 +344,97 @@ export async function getSessionsByCampaign(campaignId: string): Promise<Session
     return [];
   }
   return data ?? [];
+}
+
+export async function getPlayerCharactersByCampaign(campaignId: string): Promise<PlayerCharacter[]> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("getPlayerCharactersByCampaign error: not signed in");
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("player_characters")
+    .select("*")
+    .eq("campaign_id", campaignId)
+    .eq("user_id", user.id)
+    .order("status", { ascending: true })
+    .order("name", { ascending: true });
+
+  if (error) {
+    console.error("getPlayerCharactersByCampaign error", error);
+    return [];
+  }
+  return data ?? [];
+}
+
+export async function createPlayerCharacter(
+  campaignId: string,
+  fields: {
+    name: string;
+    player_name?: string | null;
+    color?: string;
+    notes?: string | null;
+    status?: "active" | "dead" | "retired";
+  }
+): Promise<PlayerCharacter | null> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("createPlayerCharacter error: not signed in");
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("player_characters")
+    .insert({
+      campaign_id: campaignId,
+      user_id: user.id,
+      ...fields,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("createPlayerCharacter error", error);
+    return null;
+  }
+
+  return data;
+}
+
+export async function updatePlayerCharacter(
+  characterId: string,
+  fields: {
+    name?: string;
+    player_name?: string | null;
+    color?: string;
+    notes?: string | null;
+    status?: "active" | "dead" | "retired";
+  }
+): Promise<PlayerCharacter | null> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("updatePlayerCharacter error: not signed in");
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("player_characters")
+    .update(fields)
+    .eq("id", characterId)
+    .eq("user_id", user.id)
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("updatePlayerCharacter error", error);
+    return null;
+  }
+
+  return data;
 }
 
 export async function getSessionById(sessionId: string): Promise<Session | null> {

@@ -52,6 +52,24 @@ export default function SessionDetailPage() {
     return [...notesToSort].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   };
 
+  const sessionNpcSummaries = Array.from(
+    notes.reduce((map, note) => {
+      const noteNpcIds = new Set<string>();
+      for (const noteNpc of note.note_npcs ?? []) {
+        if (noteNpcIds.has(noteNpc.npcs.id)) continue;
+        noteNpcIds.add(noteNpc.npcs.id);
+        const existing = map.get(noteNpc.npcs.id);
+        map.set(noteNpc.npcs.id, {
+          npc: noteNpc.npcs,
+          count: (existing?.count ?? 0) + 1,
+        });
+      }
+      return map;
+    }, new Map<string, { npc: Npc; count: number }>())
+  )
+    .map(([, value]) => value)
+    .sort((a, b) => b.count - a.count || a.npc.name.localeCompare(b.npc.name));
+
   const hasSearchQuery = searchQuery.trim().length > 0;
   const filteredNotes = (searchScope === 'campaign' && hasSearchQuery ? campaignNotes : notes).filter((note) => {
     if (!hasSearchQuery) return true;
@@ -1077,6 +1095,34 @@ export default function SessionDetailPage() {
               >
                 Set time
               </button>
+            </div>
+            <div className="mt-6 border-t border-slate-200 pt-6">
+              <h2 className="text-lg font-semibold text-slate-900">Session NPCs</h2>
+              <p className="mt-2 text-sm text-slate-600">NPCs mentioned in this session.</p>
+              {sessionNpcSummaries.length === 0 ? (
+                <p className="mt-4 text-sm text-slate-500">No NPCs yet.</p>
+              ) : (
+                <div className="mt-4 space-y-2">
+                  {sessionNpcSummaries.map(({ npc, count }) => (
+                    <button
+                      key={npc.id}
+                      type="button"
+                      onClick={() => openNpcModal(npc)}
+                      className="flex w-full items-center justify-between gap-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-left hover:bg-amber-50"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-slate-900">{npc.name}</span>
+                        {npc.race && (
+                          <span className="block truncate text-xs text-slate-500">{npc.race}</span>
+                        )}
+                      </span>
+                      <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
+                        {count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </aside>
         </div>
