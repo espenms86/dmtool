@@ -3,8 +3,8 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { getSessionById, getSessionsByCampaign, getNotesBySession, createNote, updateNote, deleteNote, getTagsByUser, getNotesByCampaign, getCampaignById, getCampaignCalendar, updateCampaignIngameTime } from '@/lib/queries';
-import type { Session, NoteWithTags, Tag, Campaign, CampaignCalendar } from '@/lib/types';
+import { getSessionById, getSessionsByCampaign, getNotesBySession, createNote, updateNote, deleteNote, getTagsByUser, getNpcsByUser, getNotesByCampaign, getCampaignById, getCampaignCalendar, updateCampaignIngameTime } from '@/lib/queries';
+import type { Session, NoteWithTags, Tag, Npc, Campaign, CampaignCalendar } from '@/lib/types';
 
 export default function SessionDetailPage() {
   const params = useParams();
@@ -20,14 +20,19 @@ export default function SessionDetailPage() {
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('');
   const [newTag, setNewTag] = useState('');
+  const [npcInput, setNpcInput] = useState('');
+  const [selectedNpcs, setSelectedNpcs] = useState<string[]>([]);
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState('');
   const [editingTags, setEditingTags] = useState('');
   const [editingNewTag, setEditingNewTag] = useState('');
+  const [editingNpcInput, setEditingNpcInput] = useState('');
+  const [editingNpcs, setEditingNpcs] = useState<string[]>([]);
   const [availableTags, setAvailableTags] = useState<Tag[]>([]);
+  const [availableNpcs, setAvailableNpcs] = useState<Npc[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchMode, setSearchMode] = useState<'free' | 'text' | 'tags'>('free');
+  const [searchMode, setSearchMode] = useState<'free' | 'text' | 'tags' | 'npcs'>('free');
   const [searchScope, setSearchScope] = useState<'session' | 'campaign'>('session');
   const [campaignNotes, setCampaignNotes] = useState<NoteWithTags[]>([]);
   const [campaignCalendar, setCampaignCalendar] = useState<CampaignCalendar | null>(null);
@@ -38,14 +43,20 @@ export default function SessionDetailPage() {
   const [passHours, setPassHours] = useState('');
   const [passMinutes, setPassMinutes] = useState('');
 
-  const filteredNotes = (searchScope === 'session' ? notes : campaignNotes).filter((note) => {
-    if (!searchQuery.trim()) return true;
+  const sortNotesNewestFirst = (notesToSort: NoteWithTags[]) => {
+    return [...notesToSort].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  };
+
+  const hasSearchQuery = searchQuery.trim().length > 0;
+  const filteredNotes = (searchScope === 'campaign' && hasSearchQuery ? campaignNotes : notes).filter((note) => {
+    if (!hasSearchQuery) return true;
     const query = searchQuery.toLowerCase();
     if (searchMode === 'free') {
       const titleMatch = note.title.toLowerCase().includes(query);
       const contentMatch = note.content?.toLowerCase().includes(query);
       const tagMatch = note.note_tags.some((nt) => nt.tags.name.toLowerCase().includes(query));
-      return titleMatch || contentMatch || tagMatch;
+      const npcMatch = (note.note_npcs ?? []).some((nn) => nn.npcs.name.toLowerCase().includes(query));
+      return titleMatch || contentMatch || tagMatch || npcMatch;
     } else if (searchMode === 'text') {
       const titleMatch = note.title.toLowerCase().includes(query);
       const contentMatch = note.content?.toLowerCase().includes(query);
@@ -53,6 +64,9 @@ export default function SessionDetailPage() {
     } else if (searchMode === 'tags') {
       const tagMatch = note.note_tags.some((nt) => nt.tags.name.toLowerCase().includes(query));
       return tagMatch;
+    } else if (searchMode === 'npcs') {
+      const npcMatch = (note.note_npcs ?? []).some((nn) => nn.npcs.name.toLowerCase().includes(query));
+      return npcMatch;
     }
     return true;
   });
@@ -74,25 +88,31 @@ export default function SessionDetailPage() {
     setEditingContent(note.content || '');
     setEditingTags(note.note_tags.map(nt => nt.tags.name).join(', '));
     setEditingNewTag('');
+    setEditingNpcInput('');
+    setEditingNpcs((note.note_npcs ?? []).map(nn => nn.npcs.name));
   };
 
   const saveEditNote = async () => {
     if (!editingNoteId) return;
     const tagNames = editingTags.split(',').map(t => t.trim()).filter(t => t);
-    const updatedNote = await updateNote(editingNoteId, editingContent, tagNames);
+    const updatedNote = await updateNote(editingNoteId, editingContent, tagNames, editingNpcs);
     if (updatedNote) {
-      // Reload notes and tags
-      const [notesData, tagsData] = await Promise.all([
+      // Reload notes, tags, and NPCs
+      const [notesData, tagsData, npcsData] = await Promise.all([
         getNotesBySession(sessionId),
         getTagsByUser(),
+        getNpcsByUser(),
       ]);
-      setNotes(notesData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
+      setNotes(sortNotesNewestFirst(notesData));
       setAvailableTags(tagsData);
+      setAvailableNpcs(npcsData);
     }
     setEditingNoteId(null);
     setEditingContent('');
     setEditingTags('');
     setEditingNewTag('');
+    setEditingNpcInput('');
+    setEditingNpcs([]);
   };
 
   const cancelEditNote = () => {
@@ -100,19 +120,23 @@ export default function SessionDetailPage() {
     setEditingContent('');
     setEditingTags('');
     setEditingNewTag('');
+    setEditingNpcInput('');
+    setEditingNpcs([]);
   };
 
   const deleteNoteHandler = async (noteId: string) => {
     if (confirm('Are you sure you want to delete this note?')) {
       const success = await deleteNote(noteId);
       if (success) {
-        // Reload notes and tags
-        const [notesData, tagsData] = await Promise.all([
+        // Reload notes, tags, and NPCs
+        const [notesData, tagsData, npcsData] = await Promise.all([
           getNotesBySession(sessionId),
           getTagsByUser(),
+          getNpcsByUser(),
         ]);
-        setNotes(notesData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
+        setNotes(sortNotesNewestFirst(notesData));
         setAvailableTags(tagsData);
+        setAvailableNpcs(npcsData);
       }
     }
   };
@@ -150,6 +174,34 @@ export default function SessionDetailPage() {
     return availableTags.filter((tag) => {
       const normalizedTagName = tag.name.toLowerCase();
       return normalizedTagName.includes(query) && !selectedTags.has(normalizedTagName);
+    });
+  };
+
+  const addNpcToInput = (npcName: string, currentNpcs: string[], setNpcs: (value: string[]) => void) => {
+    if (!currentNpcs.includes(npcName)) {
+      setNpcs([...currentNpcs, npcName]);
+    }
+  };
+
+  const removeNpcFromInput = (npcName: string, currentNpcs: string[], setNpcs: (value: string[]) => void) => {
+    setNpcs(currentNpcs.filter((name) => name !== npcName));
+  };
+
+  const handleAddNpc = (newNpc: string, currentNpcs: string[], setNpcs: (value: string[]) => void, setNewNpc: (value: string) => void) => {
+    if (newNpc.trim()) {
+      addNpcToInput(newNpc.trim(), currentNpcs, setNpcs);
+      setNewNpc('');
+    }
+  };
+
+  const getFilteredNpcSuggestions = (inputValue: string, currentNpcs: string[]) => {
+    const query = inputValue.trim().toLowerCase();
+    if (!query) return [];
+
+    const selectedNpcNames = new Set(currentNpcs.map((npc) => npc.toLowerCase()));
+    return availableNpcs.filter((npc) => {
+      const normalizedNpcName = npc.name.toLowerCase();
+      return normalizedNpcName.includes(query) && !selectedNpcNames.has(normalizedNpcName);
     });
   };
 
@@ -228,11 +280,11 @@ export default function SessionDetailPage() {
 
   const refreshNotesState = async () => {
     const notesData = await getNotesBySession(sessionId);
-    setNotes(notesData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
+    setNotes(sortNotesNewestFirst(notesData));
 
     if (searchScope === 'campaign') {
       const campaignNotesData = await getNotesByCampaign(campaignId);
-      setCampaignNotes(campaignNotesData);
+      setCampaignNotes(sortNotesNewestFirst(campaignNotesData));
     }
   };
 
@@ -273,22 +325,29 @@ export default function SessionDetailPage() {
         ingame_end_day: shouldPassTime ? endDay : null,
         ingame_end_hour: shouldPassTime ? endHour : null,
         ingame_end_minute: shouldPassTime ? endMinute : null,
-      }
+      },
+      selectedNpcs
     );
     if (newNote) {
       if (shouldPassTime) {
         await updateCampaignIngameTime(campaignId, endHour, endMinute, endDay);
         await refreshCampaignState();
       }
-      // Reload notes and tags
-      const tagsData = await getTagsByUser();
+      // Reload notes, tags, and NPCs
+      const [tagsData, npcsData] = await Promise.all([
+        getTagsByUser(),
+        getNpcsByUser(),
+      ]);
       await refreshNotesState();
       setAvailableTags(tagsData);
+      setAvailableNpcs(npcsData);
       // Clear form
       setTitle('');
       setContent('');
       setTags('');
       setNewTag('');
+      setNpcInput('');
+      setSelectedNpcs([]);
       setPassYears('');
       setPassDays('');
       setPassHours('');
@@ -307,20 +366,22 @@ export default function SessionDetailPage() {
 
   useEffect(() => {
     async function loadData() {
-      const [campaignData, campaignCalendarData, sessionData, sessionsData, notesData, tagsData] = await Promise.all([
+      const [campaignData, campaignCalendarData, sessionData, sessionsData, notesData, tagsData, npcsData] = await Promise.all([
         getCampaignById(campaignId),
         getCampaignCalendar(campaignId),
         getSessionById(sessionId),
         getSessionsByCampaign(campaignId),
         getNotesBySession(sessionId),
         getTagsByUser(),
+        getNpcsByUser(),
       ]);
       setCampaign(campaignData);
       setCampaignCalendar(campaignCalendarData);
       setSession(sessionData);
       setSessions(sessionsData);
-      setNotes(notesData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
+      setNotes(sortNotesNewestFirst(notesData));
       setAvailableTags(tagsData);
+      setAvailableNpcs(npcsData);
       if (campaignData) {
         setManualHour(String(campaignData.ingame_hour ?? 0));
         setManualMinute(String(campaignData.ingame_minute ?? 0));
@@ -333,7 +394,7 @@ export default function SessionDetailPage() {
     const loadCampaignNotes = async () => {
       if (searchScope === 'campaign') {
         const notesData = await getNotesByCampaign(campaignId);
-        setCampaignNotes(notesData);
+        setCampaignNotes(sortNotesNewestFirst(notesData));
       }
     };
     loadCampaignNotes();
@@ -341,7 +402,9 @@ export default function SessionDetailPage() {
 
   const calendarState = deriveCalendarState();
   const createTagSuggestions = getFilteredTagSuggestions(newTag, tags);
+  const createNpcSuggestions = getFilteredNpcSuggestions(npcInput, selectedNpcs);
   const editTagSuggestions = getFilteredTagSuggestions(editingNewTag, editingTags);
+  const editNpcSuggestions = getFilteredNpcSuggestions(editingNpcInput, editingNpcs);
 
   const setManualTime = async () => {
     if (!campaign) return;
@@ -388,12 +451,13 @@ export default function SessionDetailPage() {
               <div className="flex gap-2">
                 <select
                   value={searchMode}
-                  onChange={(e) => setSearchMode(e.target.value as 'free' | 'text' | 'tags')}
+                  onChange={(e) => setSearchMode(e.target.value as 'free' | 'text' | 'tags' | 'npcs')}
                   className="flex-1 rounded border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 >
                   <option value="free">Free</option>
                   <option value="text">Text</option>
                   <option value="tags">Tags</option>
+                  <option value="npcs">NPCs</option>
                 </select>
                 <select
                   value={searchScope}
@@ -457,6 +521,7 @@ export default function SessionDetailPage() {
                   onChange={(e) => setContent(e.target.value)}
                   className="w-full rounded border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 />
+                <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   {getTagList(tags).length > 0 && (
                     <div className="flex flex-wrap gap-2">
@@ -503,6 +568,57 @@ export default function SessionDetailPage() {
                       ))}
                     </div>
                   )}
+                </div>
+                <div className="space-y-2">
+                  {selectedNpcs.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {selectedNpcs.map((npcName) => (
+                        <span key={npcName} className="inline-flex items-center rounded-full bg-amber-100 px-3 py-1 text-xs text-amber-800">
+                          {npcName}
+                          <button
+                            type="button"
+                            onClick={() => removeNpcFromInput(npcName, selectedNpcs, setSelectedNpcs)}
+                            className="ml-2 text-amber-600 hover:text-amber-800"
+                          >
+                            x
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Add NPC"
+                      value={npcInput}
+                      onChange={(e) => setNpcInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ',') {
+                          e.preventDefault();
+                          handleAddNpc(npcInput, selectedNpcs, setSelectedNpcs, setNpcInput);
+                        }
+                      }}
+                      className="flex-1 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                  {createNpcSuggestions.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {createNpcSuggestions.map((npc) => (
+                        <button
+                          key={npc.id}
+                          type="button"
+                          onClick={() => {
+                            addNpcToInput(npc.name, selectedNpcs, setSelectedNpcs);
+                            setNpcInput('');
+                          }}
+                          className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700 hover:bg-slate-200"
+                        >
+                          {npc.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
@@ -639,6 +755,11 @@ export default function SessionDetailPage() {
                                 {nt.tags.name}
                               </span>
                             ))}
+                            {(note.note_npcs ?? []).map((nn) => (
+                              <span key={nn.npcs.id} className="rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
+                                {nn.npcs.name}
+                              </span>
+                            ))}
                             {!isEditing && (
                               <>
                                 <button
@@ -719,6 +840,56 @@ export default function SessionDetailPage() {
                                       className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700 hover:bg-slate-200"
                                     >
                                       {tag.name}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div className="space-y-2">
+                              {editingNpcs.length > 0 && (
+                                <div className="flex flex-wrap gap-2">
+                                  {editingNpcs.map((npcName) => (
+                                    <span key={npcName} className="inline-flex items-center rounded-full bg-amber-100 px-3 py-1 text-xs text-amber-800">
+                                      {npcName}
+                                      <button
+                                        type="button"
+                                        onClick={() => removeNpcFromInput(npcName, editingNpcs, setEditingNpcs)}
+                                        className="ml-2 text-amber-600 hover:text-amber-800"
+                                      >
+                                        x
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="flex gap-2">
+                                <input
+                                  type="text"
+                                  placeholder="Add NPC"
+                                  value={editingNpcInput}
+                                  onChange={(e) => setEditingNpcInput(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ',') {
+                                      e.preventDefault();
+                                      handleAddNpc(editingNpcInput, editingNpcs, setEditingNpcs, setEditingNpcInput);
+                                    }
+                                  }}
+                                  className="flex-1 rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                                />
+                              </div>
+                              {editNpcSuggestions.length > 0 && (
+                                <div className="flex flex-wrap gap-2">
+                                  {editNpcSuggestions.map((npc) => (
+                                    <button
+                                      key={npc.id}
+                                      type="button"
+                                      onClick={() => {
+                                        addNpcToInput(npc.name, editingNpcs, setEditingNpcs);
+                                        setEditingNpcInput('');
+                                      }}
+                                      className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700 hover:bg-slate-200"
+                                    >
+                                      {npc.name}
                                     </button>
                                   ))}
                                 </div>

@@ -86,13 +86,33 @@ export type Tag = {
   created_at: string;
 };
 
+export type Npc = {
+  id: string;
+  user_id: string;
+  name: string;
+  race: string | null;
+  traits: string | null;
+  voice: string | null;
+  image_url: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type NoteTag = {
   note_id: string;
   tag_id: string;
 };
 
+export type NoteNpc = {
+  note_id: string;
+  npc_id: string;
+};
+
 export type NoteWithTags = Note & {
   note_tags: Array<{
     tags: Tag;
+  }>;
+  note_npcs: Array<{
+    npcs: Npc;
   }>;
 };

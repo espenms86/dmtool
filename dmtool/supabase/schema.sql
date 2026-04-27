@@ -71,6 +71,25 @@ create table if not exists note_tags (
   primary key (note_id, tag_id)
 );
 
+create table if not exists npcs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id),
+  name text not null,
+  race text,
+  traits text,
+  voice text,
+  image_url text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint npcs_user_name_unique unique (user_id, name)
+);
+
+create table if not exists note_npcs (
+  note_id uuid not null references notes(id) on delete cascade,
+  npc_id uuid not null references npcs(id) on delete cascade,
+  primary key (note_id, npc_id)
+);
+
 -- Recommended Supabase RLS policies
 -- Enable RLS for all user-owned tables:
 alter table campaigns enable row level security;
@@ -78,6 +97,8 @@ alter table sessions enable row level security;
 alter table notes enable row level security;
 alter table tags enable row level security;
 alter table note_tags enable row level security;
+alter table npcs enable row level security;
+alter table note_npcs enable row level security;
 
 -- Core policy pattern: allow each authenticated user to access only their own records.
 -- For campaigns:
@@ -89,17 +110,73 @@ create policy "Users can manage own campaigns" on campaigns
 -- For sessions:
 create policy "Users can manage own sessions" on sessions
   for all
-  using (user_id = auth.uid())
-  with check (user_id = auth.uid());
+  using (
+    user_id = auth.uid()
+    and exists (
+      select 1
+      from campaigns c
+      where c.id = sessions.campaign_id
+      and c.user_id = auth.uid()
+    )
+  )
+  with check (
+    user_id = auth.uid()
+    and exists (
+      select 1
+      from campaigns c
+      where c.id = sessions.campaign_id
+      and c.user_id = auth.uid()
+    )
+  );
 
 -- For notes:
 create policy "Users can manage own notes" on notes
   for all
-  using (user_id = auth.uid())
-  with check (user_id = auth.uid());
+  using (
+    user_id = auth.uid()
+    and exists (
+      select 1
+      from campaigns c
+      where c.id = notes.campaign_id
+      and c.user_id = auth.uid()
+    )
+    and (
+      session_id is null
+      or exists (
+        select 1
+        from sessions s
+        where s.id = notes.session_id
+        and s.user_id = auth.uid()
+      )
+    )
+  )
+  with check (
+    user_id = auth.uid()
+    and exists (
+      select 1
+      from campaigns c
+      where c.id = notes.campaign_id
+      and c.user_id = auth.uid()
+    )
+    and (
+      session_id is null
+      or exists (
+        select 1
+        from sessions s
+        where s.id = notes.session_id
+        and s.user_id = auth.uid()
+      )
+    )
+  );
 
 -- For tags:
 create policy "Users can manage own tags" on tags
+  for all
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid());
+
+-- For npcs:
+create policy "Users can manage own npcs" on npcs
   for all
   using (user_id = auth.uid())
   with check (user_id = auth.uid());
@@ -114,6 +191,12 @@ create policy "Users can manage own note_tags" on note_tags
       where n.id = note_tags.note_id
       and n.user_id = auth.uid()
     )
+    and exists (
+      select 1
+      from tags t
+      where t.id = note_tags.tag_id
+      and t.user_id = auth.uid()
+    )
   )
   with check (
     exists (
@@ -122,23 +205,44 @@ create policy "Users can manage own note_tags" on note_tags
       where n.id = note_tags.note_id
       and n.user_id = auth.uid()
     )
+    and exists (
+      select 1
+      from tags t
+      where t.id = note_tags.tag_id
+      and t.user_id = auth.uid()
+    )
   );
---       where n.id = note_tags.note_id
---         and t.id = note_tags.tag_id
---         and n.user_id = auth.uid()
---         and t.user_id = auth.uid()
---     )
---   )
---   with check (
---     exists (
---       select 1
---       from notes n
---       join tags t on t.id = note_tags.tag_id
---       where n.id = note_tags.note_id
---         and t.id = note_tags.tag_id
---         and n.user_id = auth.uid()
---         and t.user_id = auth.uid()
---     )
---   );
+
+-- For note_npcs:
+create policy "Users can manage own note_npcs" on note_npcs
+  for all
+  using (
+    exists (
+      select 1
+      from notes n
+      where n.id = note_npcs.note_id
+      and n.user_id = auth.uid()
+    )
+    and exists (
+      select 1
+      from npcs npc
+      where npc.id = note_npcs.npc_id
+      and npc.user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1
+      from notes n
+      where n.id = note_npcs.note_id
+      and n.user_id = auth.uid()
+    )
+    and exists (
+      select 1
+      from npcs npc
+      where npc.id = note_npcs.npc_id
+      and npc.user_id = auth.uid()
+    )
+  );
 
 -- Note: note_tags does not need its own user_id if the RLS policy enforces that joined notes and tags belong to auth.uid().

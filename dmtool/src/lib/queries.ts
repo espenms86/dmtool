@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient";
-import type { Campaign, CampaignCalendar, Note, Session, Tag, NoteWithTags } from "./types";
+import type { Campaign, CampaignCalendar, Note, Session, Tag, Npc, NoteWithTags } from "./types";
 
 const DEFAULT_CALENDAR = {
   name: "Realm Calendar",
@@ -29,7 +29,17 @@ const DEFAULT_CALENDAR = {
 };
 
 export async function getCampaigns(): Promise<Campaign[]> {
-  const { data, error } = await supabase.from("campaigns").select("*");
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("getCampaigns error: not signed in");
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("campaigns")
+    .select("*")
+    .eq("user_id", user.id);
   if (error) {
     console.error("getCampaigns error", error);
     return [];
@@ -370,7 +380,7 @@ export async function getNotesBySession(sessionId: string): Promise<NoteWithTags
 
   const { data, error } = await supabase
     .from("notes")
-    .select("*, note_tags(tags(*))")
+    .select("*, note_tags(tags(*)), note_npcs(npcs(*))")
     .eq("session_id", sessionId)
     .eq("user_id", user.id);
 
@@ -394,7 +404,8 @@ export async function createNote(
     ingame_end_day?: number | null;
     ingame_end_hour?: number | null;
     ingame_end_minute?: number | null;
-  }
+  },
+  npcNames?: string[]
 ): Promise<Note | null> {
   const userResult = await supabase.auth.getUser();
   const user = userResult.data.user;
@@ -445,10 +456,28 @@ export async function createNote(
     }
   }
 
+  // Handle NPCs if provided
+  if (npcNames && npcNames.length > 0) {
+    const uniqueNpcNames = [...new Set(npcNames.map(name => name.trim()).filter(name => name))];
+    if (uniqueNpcNames.length > 0) {
+      // Get or create NPCs
+      const npcIds = await getOrCreateNpcs(uniqueNpcNames, user.id);
+      // Create note_npcs
+      if (npcIds.length > 0) {
+        const noteNpcs = npcIds.map(npcId => ({ note_id: note.id, npc_id: npcId }));
+        const { error: nnError } = await supabase.from("note_npcs").insert(noteNpcs);
+        if (nnError) {
+          console.error("createNote note_npcs error", nnError);
+          // Note: note is still created, just without NPCs
+        }
+      }
+    }
+  }
+
   return note;
 }
 
-export async function updateNote(noteId: string, content: string, tagNames?: string[]): Promise<Note | null> {
+export async function updateNote(noteId: string, content: string, tagNames?: string[], npcNames?: string[]): Promise<Note | null> {
   const userResult = await supabase.auth.getUser();
   const user = userResult.data.user;
   if (!user) {
@@ -482,6 +511,23 @@ export async function updateNote(noteId: string, content: string, tagNames?: str
       const { error: ntError } = await supabase.from("note_tags").insert(noteTags);
       if (ntError) {
         console.error("updateNote note_tags error", ntError);
+      }
+    }
+  }
+
+  // Handle NPCs if provided
+  if (npcNames !== undefined) {
+    const uniqueNpcNames = [...new Set(npcNames.map(name => name.trim()).filter(name => name))];
+    // Get or create NPCs
+    const npcIds = await getOrCreateNpcs(uniqueNpcNames, user.id);
+    // Delete existing note_npcs
+    await supabase.from("note_npcs").delete().eq("note_id", noteId);
+    // Create new note_npcs
+    if (npcIds.length > 0) {
+      const noteNpcs = npcIds.map(npcId => ({ note_id: noteId, npc_id: npcId }));
+      const { error: nnError } = await supabase.from("note_npcs").insert(noteNpcs);
+      if (nnError) {
+        console.error("updateNote note_npcs error", nnError);
       }
     }
   }
@@ -546,6 +592,41 @@ async function getOrCreateTags(tagNames: string[], userId: string): Promise<stri
   return tagNames.map(name => existingMap.get(name)!).filter(Boolean);
 }
 
+async function getOrCreateNpcs(npcNames: string[], userId: string): Promise<string[]> {
+  // First, get existing NPCs
+  const { data: existingNpcs, error: getError } = await supabase
+    .from("npcs")
+    .select("id, name")
+    .eq("user_id", userId)
+    .in("name", npcNames);
+
+  if (getError) {
+    console.error("getOrCreateNpcs get error", getError);
+    return [];
+  }
+
+  const existingMap = new Map(existingNpcs?.map(npc => [npc.name, npc.id]) || []);
+  const existingNames = new Set(existingMap.keys());
+  const newNames = npcNames.filter(name => !existingNames.has(name));
+
+  if (newNames.length > 0) {
+    // Create new NPCs
+    const newNpcs = newNames.map(name => ({ name, user_id: userId }));
+    const { data: createdNpcs, error: createError } = await supabase
+      .from("npcs")
+      .insert(newNpcs)
+      .select("id, name");
+
+    if (createError) {
+      console.error("getOrCreateNpcs create error", createError);
+    } else {
+      createdNpcs?.forEach(npc => existingMap.set(npc.name, npc.id));
+    }
+  }
+
+  return npcNames.map(name => existingMap.get(name)!).filter(Boolean);
+}
+
 export async function getNotesByCampaign(campaignId: string): Promise<NoteWithTags[]> {
   const userResult = await supabase.auth.getUser();
   const user = userResult.data.user;
@@ -556,7 +637,7 @@ export async function getNotesByCampaign(campaignId: string): Promise<NoteWithTa
 
   const { data, error } = await supabase
     .from("notes")
-    .select("*, note_tags(tags(*))")
+    .select("*, note_tags(tags(*)), note_npcs(npcs(*))")
     .eq("campaign_id", campaignId)
     .eq("user_id", user.id);
 
@@ -582,6 +663,26 @@ export async function getTagsByUser(): Promise<Tag[]> {
 
   if (error) {
     console.error("getTagsByUser error", error);
+    return [];
+  }
+  return data ?? [];
+}
+
+export async function getNpcsByUser(): Promise<Npc[]> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("getNpcsByUser error: not signed in");
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("npcs")
+    .select("*")
+    .eq("user_id", user.id);
+
+  if (error) {
+    console.error("getNpcsByUser error", error);
     return [];
   }
   return data ?? [];
