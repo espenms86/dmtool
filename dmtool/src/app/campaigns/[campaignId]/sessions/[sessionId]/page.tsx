@@ -85,7 +85,8 @@ export default function SessionDetailPage() {
       const contentMatch = note.content?.toLowerCase().includes(query);
       const tagMatch = note.note_tags.some((nt) => nt.tags.name.toLowerCase().includes(query));
       const npcMatch = (note.note_npcs ?? []).some((nn) => nn.npcs.name.toLowerCase().includes(query));
-      return titleMatch || contentMatch || tagMatch || npcMatch;
+      const playerCharacterMatch = (note.note_player_characters ?? []).some((npc) => npc.player_characters.name.toLowerCase().includes(query));
+      return titleMatch || contentMatch || tagMatch || npcMatch || playerCharacterMatch;
     } else if (searchMode === 'text') {
       const titleMatch = note.title.toLowerCase().includes(query);
       const contentMatch = note.content?.toLowerCase().includes(query);
@@ -917,9 +918,9 @@ export default function SessionDetailPage() {
                         } transition-colors`}
                         onClick={isEditing ? undefined : () => toggleNoteExpansion(note.id)}
                       >
-                        <div className="flex items-center justify-between gap-4">
-                          <div className="flex-1 flex items-center justify-between">
-                            <div className="flex items-center gap-2">
+                        <div className="space-y-3">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex min-w-0 flex-wrap items-center gap-2">
                               <h3 className={`text-sm font-semibold ${isFromDifferentSession ? 'text-blue-600' : 'text-slate-900'}`}>
                                 {note.title}
                               </h3>
@@ -940,6 +941,7 @@ export default function SessionDetailPage() {
                                 </button>
                               )}
                             </div>
+                            <div className="flex shrink-0 items-center gap-2">
                             <span className="text-xs text-slate-600">
                               {new Date(note.created_at).toLocaleTimeString('en-GB', {
                                 hour: '2-digit',
@@ -947,34 +949,6 @@ export default function SessionDetailPage() {
                                 hour12: false
                               })}
                             </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {note.note_tags.map((nt) => (
-                              <span key={nt.tags.id} className="rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">
-                                {nt.tags.name}
-                              </span>
-                            ))}
-                            {(note.note_npcs ?? []).map((nn) => (
-                              <button
-                                key={nn.npcs.id}
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openNpcModal(nn.npcs);
-                                }}
-                                className="rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-200"
-                              >
-                                {nn.npcs.name}
-                              </button>
-                            ))}
-                            {(note.note_player_characters ?? []).map((npc) => (
-                              <span
-                                key={npc.player_characters.id}
-                                className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-800"
-                              >
-                                {npc.player_characters.name}
-                              </span>
-                            ))}
                             {!isEditing && (
                               <>
                                 <button
@@ -997,10 +971,10 @@ export default function SessionDetailPage() {
                                 </button>
                               </>
                             )}
+                            </div>
                           </div>
-                        </div>
                         {isEditing ? (
-                          <div className="mt-2 space-y-2">
+                          <div className="space-y-2">
                             <textarea
                               value={editingContent}
                               onChange={(e) => setEditingContent(e.target.value)}
@@ -1146,14 +1120,43 @@ export default function SessionDetailPage() {
                           </div>
                         ) : (
                           note.content && (
-                            <p className="mt-2 text-sm leading-6 text-slate-600">
+                            <p className="text-sm leading-6 text-slate-600">
                               {isExpanded ? note.content : `${note.content.slice(0, 100)}${note.content.length > 100 ? '...' : ''}`}
                             </p>
                           )
                         )}
+                        <div className="flex flex-wrap items-center gap-2">
+                          {note.note_tags.map((nt) => (
+                            <span key={nt.tags.id} className="rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">
+                              {nt.tags.name}
+                            </span>
+                          ))}
+                          {(note.note_npcs ?? []).map((nn) => (
+                            <button
+                              key={nn.npcs.id}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openNpcModal(nn.npcs);
+                              }}
+                              className="rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-200"
+                            >
+                              {nn.npcs.name}
+                            </button>
+                          ))}
+                          {(note.note_player_characters ?? []).map((npc) => (
+                            <span
+                              key={npc.player_characters.id}
+                              className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-800"
+                            >
+                              {npc.player_characters.name}
+                            </span>
+                          ))}
+                        </div>
                         {isExpanded && !isEditing && (
                           <p className="mt-2 text-xs text-slate-500">Click to collapse</p>
                         )}
+                        </div>
                       </div>
                     );
                   })
