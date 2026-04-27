@@ -128,4 +128,7 @@ export type NoteWithTags = Note & {
   note_npcs: Array<{
     npcs: Npc;
   }>;
+  note_player_characters: Array<{
+    player_characters: PlayerCharacter;
+  }>;
 };

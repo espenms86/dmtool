@@ -3,8 +3,8 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { getSessionById, getSessionsByCampaign, getNotesBySession, createNote, updateNote, deleteNote, getTagsByUser, getNpcsByUser, updateNpc, getNotesByCampaign, getCampaignById, getCampaignCalendar, updateCampaignIngameTime } from '@/lib/queries';
-import type { Session, NoteWithTags, Tag, Npc, Campaign, CampaignCalendar } from '@/lib/types';
+import { getSessionById, getSessionsByCampaign, getNotesBySession, createNote, updateNote, deleteNote, getTagsByUser, getNpcsByUser, updateNpc, getNotesByCampaign, getCampaignById, getCampaignCalendar, updateCampaignIngameTime, getPlayerCharactersByCampaign } from '@/lib/queries';
+import type { Session, NoteWithTags, Tag, Npc, Campaign, CampaignCalendar, PlayerCharacter } from '@/lib/types';
 
 export default function SessionDetailPage() {
   const params = useParams();
@@ -16,12 +16,14 @@ export default function SessionDetailPage() {
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [notes, setNotes] = useState<NoteWithTags[]>([]);
+  const [playerCharacters, setPlayerCharacters] = useState<PlayerCharacter[]>([]);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('');
   const [newTag, setNewTag] = useState('');
   const [npcInput, setNpcInput] = useState('');
   const [selectedNpcs, setSelectedNpcs] = useState<string[]>([]);
+  const [selectedPlayerCharacterIds, setSelectedPlayerCharacterIds] = useState<string[]>([]);
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState('');
@@ -29,6 +31,7 @@ export default function SessionDetailPage() {
   const [editingNewTag, setEditingNewTag] = useState('');
   const [editingNpcInput, setEditingNpcInput] = useState('');
   const [editingNpcs, setEditingNpcs] = useState<string[]>([]);
+  const [editingPlayerCharacterIds, setEditingPlayerCharacterIds] = useState<string[]>([]);
   const [availableTags, setAvailableTags] = useState<Tag[]>([]);
   const [availableNpcs, setAvailableNpcs] = useState<Npc[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -69,6 +72,9 @@ export default function SessionDetailPage() {
   )
     .map(([, value]) => value)
     .sort((a, b) => b.count - a.count || a.npc.name.localeCompare(b.npc.name));
+  const activePlayerCharacters = playerCharacters.filter((character) => character.status === 'active');
+  const selectedPlayerCharacters = playerCharacters.filter((character) => selectedPlayerCharacterIds.includes(character.id));
+  const editingPlayerCharacters = playerCharacters.filter((character) => editingPlayerCharacterIds.includes(character.id));
 
   const hasSearchQuery = searchQuery.trim().length > 0;
   const filteredNotes = (searchScope === 'campaign' && hasSearchQuery ? campaignNotes : notes).filter((note) => {
@@ -113,12 +119,13 @@ export default function SessionDetailPage() {
     setEditingNewTag('');
     setEditingNpcInput('');
     setEditingNpcs((note.note_npcs ?? []).map(nn => nn.npcs.name));
+    setEditingPlayerCharacterIds((note.note_player_characters ?? []).map(npc => npc.player_characters.id));
   };
 
   const saveEditNote = async () => {
     if (!editingNoteId) return;
     const tagNames = editingTags.split(',').map(t => t.trim()).filter(t => t);
-    const updatedNote = await updateNote(editingNoteId, editingContent, tagNames, editingNpcs);
+    const updatedNote = await updateNote(editingNoteId, editingContent, tagNames, editingNpcs, editingPlayerCharacterIds);
     if (updatedNote) {
       // Reload notes, tags, and NPCs
       const [notesData, tagsData, npcsData] = await Promise.all([
@@ -136,6 +143,7 @@ export default function SessionDetailPage() {
     setEditingNewTag('');
     setEditingNpcInput('');
     setEditingNpcs([]);
+    setEditingPlayerCharacterIds([]);
   };
 
   const cancelEditNote = () => {
@@ -145,6 +153,7 @@ export default function SessionDetailPage() {
     setEditingNewTag('');
     setEditingNpcInput('');
     setEditingNpcs([]);
+    setEditingPlayerCharacterIds([]);
   };
 
   const deleteNoteHandler = async (noteId: string) => {
@@ -215,6 +224,28 @@ export default function SessionDetailPage() {
       addNpcToInput(newNpc.trim(), currentNpcs, setNpcs);
       setNewNpc('');
     }
+  };
+
+  const addPlayerCharacterToDraft = (characterId: string) => {
+    setSelectedPlayerCharacterIds((current) => (
+      current.includes(characterId) ? current : [...current, characterId]
+    ));
+  };
+
+  const removePlayerCharacterFromDraft = (characterId: string) => {
+    setSelectedPlayerCharacterIds((current) => current.filter((id) => id !== characterId));
+  };
+
+  const togglePlayerCharacterForEdit = (characterId: string) => {
+    setEditingPlayerCharacterIds((current) => (
+      current.includes(characterId)
+        ? current.filter((id) => id !== characterId)
+        : [...current, characterId]
+    ));
+  };
+
+  const removePlayerCharacterFromEdit = (characterId: string) => {
+    setEditingPlayerCharacterIds((current) => current.filter((id) => id !== characterId));
   };
 
   const getFilteredNpcSuggestions = (inputValue: string, currentNpcs: string[]) => {
@@ -400,7 +431,8 @@ export default function SessionDetailPage() {
         ingame_end_hour: shouldPassTime ? endHour : null,
         ingame_end_minute: shouldPassTime ? endMinute : null,
       },
-      selectedNpcs
+      selectedNpcs,
+      selectedPlayerCharacterIds
     );
     if (newNote) {
       if (shouldPassTime) {
@@ -422,6 +454,7 @@ export default function SessionDetailPage() {
       setNewTag('');
       setNpcInput('');
       setSelectedNpcs([]);
+      setSelectedPlayerCharacterIds([]);
       setPassYears('');
       setPassDays('');
       setPassHours('');
@@ -440,7 +473,7 @@ export default function SessionDetailPage() {
 
   useEffect(() => {
     async function loadData() {
-      const [campaignData, campaignCalendarData, sessionData, sessionsData, notesData, tagsData, npcsData] = await Promise.all([
+      const [campaignData, campaignCalendarData, sessionData, sessionsData, notesData, tagsData, npcsData, playerCharactersData] = await Promise.all([
         getCampaignById(campaignId),
         getCampaignCalendar(campaignId),
         getSessionById(sessionId),
@@ -448,6 +481,7 @@ export default function SessionDetailPage() {
         getNotesBySession(sessionId),
         getTagsByUser(),
         getNpcsByUser(),
+        getPlayerCharactersByCampaign(campaignId),
       ]);
       setCampaign(campaignData);
       setCampaignCalendar(campaignCalendarData);
@@ -456,6 +490,7 @@ export default function SessionDetailPage() {
       setNotes(sortNotesNewestFirst(notesData));
       setAvailableTags(tagsData);
       setAvailableNpcs(npcsData);
+      setPlayerCharacters(playerCharactersData);
       if (campaignData) {
         setManualHour(String(campaignData.ingame_hour ?? 0));
         setManualMinute(String(campaignData.ingame_minute ?? 0));
@@ -506,15 +541,82 @@ export default function SessionDetailPage() {
           ← Back to campaign
         </Link>
         <header className="rounded-xl bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
+          <div className="grid gap-4 xl:grid-cols-[1fr_auto_24rem] xl:items-center">
+            <div className="min-w-0">
               <p className="text-sm uppercase tracking-[0.2em] text-slate-500">Session workspace</p>
               <h1 className="mt-2 text-3xl font-semibold text-slate-900">{session?.name || `Session ${sessionId}`}</h1>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
                 Workspace layout for note search, session creation, and helpers.
               </p>
             </div>
-            <div className="grid w-full gap-3 sm:max-w-md lg:w-96">
+            <div className="rounded border border-slate-200 bg-slate-50 p-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end xl:flex-col xl:items-stretch 2xl:flex-row 2xl:items-end">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Campaign Clock</p>
+                  {campaign ? (
+                    <div className="mt-2 space-y-1">
+                      <div className="font-mono text-lg font-bold text-slate-900">
+                        {campaign.ingame_year && campaign.ingame_month && campaign.ingame_day
+                          ? `${campaign.ingame_year}-${String(campaign.ingame_month).padStart(2, '0')}-${String(campaign.ingame_day).padStart(2, '0')}`
+                          : campaign.ingame_month && campaign.ingame_day
+                            ? `Month ${campaign.ingame_month}, Day ${campaign.ingame_day}`
+                            : campaign.ingame_day
+                              ? `Day ${campaign.ingame_day}`
+                              : 'No date set'}
+                        {campaign.ingame_hour != null && campaign.ingame_minute != null
+                          ? ` ${String(campaign.ingame_hour).padStart(2, '0')}:${String(campaign.ingame_minute).padStart(2, '0')}`
+                          : ''}
+                      </div>
+                      {campaign.ingame_hour == null || campaign.ingame_minute == null ? (
+                        <p className="text-xs text-slate-500">No time set</p>
+                      ) : null}
+                      {calendarState && (
+                        <p className="text-xs text-slate-600">{calendarState.formatted}</p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-slate-500">Loading campaign clock...</p>
+                  )}
+                </div>
+                <div className="flex items-end gap-2">
+                  <div className="flex flex-col">
+                    <label htmlFor="manual-hour" className="text-xs text-slate-500">
+                      Hour
+                    </label>
+                    <input
+                      id="manual-hour"
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={manualHour}
+                      onChange={(e) => setManualHour(e.target.value)}
+                      className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                  <div className="flex flex-col">
+                    <label htmlFor="manual-minute" className="text-xs text-slate-500">
+                      Minute
+                    </label>
+                    <input
+                      id="manual-minute"
+                      type="number"
+                      min={0}
+                      max={59}
+                      value={manualMinute}
+                      onChange={(e) => setManualMinute(e.target.value)}
+                      className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                  <button
+                    onClick={setManualTime}
+                    className="rounded border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                  >
+                    Set time
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="grid w-full gap-3">
               <input
                 type="search"
                 placeholder="Search notes"
@@ -694,6 +796,25 @@ export default function SessionDetailPage() {
                   )}
                 </div>
                 </div>
+                {selectedPlayerCharacters.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {selectedPlayerCharacters.map((character) => (
+                      <span
+                        key={character.id}
+                        className="inline-flex items-center rounded-full bg-emerald-100 px-3 py-1 text-xs text-emerald-800"
+                      >
+                        {character.name}
+                        <button
+                          type="button"
+                          onClick={() => removePlayerCharacterFromDraft(character.id)}
+                          className="ml-2 text-emerald-600 hover:text-emerald-800"
+                        >
+                          x
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="submit"
@@ -770,12 +891,16 @@ export default function SessionDetailPage() {
               <p className="mt-1 text-sm text-slate-600">Notes for this session will appear here.</p>
 
               <div className="mt-6 space-y-4">
-                {notes.length === 0 ? (
+                {filteredNotes.length === 0 ? (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                     <div className="flex items-center justify-between gap-4">
-                      <h3 className="text-sm font-semibold text-slate-900">No notes yet</h3>
+                      <h3 className="text-sm font-semibold text-slate-900">
+                        {hasSearchQuery ? 'No matching notes found' : 'No notes yet'}
+                      </h3>
                     </div>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">Notes for this session will appear here.</p>
+                    {!hasSearchQuery && (
+                      <p className="mt-2 text-sm leading-6 text-slate-600">Notes for this session will appear here.</p>
+                    )}
                   </div>
                 ) : (
                   filteredNotes.map((note) => {
@@ -841,6 +966,14 @@ export default function SessionDetailPage() {
                               >
                                 {nn.npcs.name}
                               </button>
+                            ))}
+                            {(note.note_player_characters ?? []).map((npc) => (
+                              <span
+                                key={npc.player_characters.id}
+                                className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-800"
+                              >
+                                {npc.player_characters.name}
+                              </span>
                             ))}
                             {!isEditing && (
                               <>
@@ -977,6 +1110,25 @@ export default function SessionDetailPage() {
                                 </div>
                               )}
                             </div>
+                            {editingPlayerCharacters.length > 0 && (
+                              <div className="flex flex-wrap gap-2">
+                                {editingPlayerCharacters.map((character) => (
+                                  <span
+                                    key={character.id}
+                                    className="inline-flex items-center rounded-full bg-emerald-100 px-3 py-1 text-xs text-emerald-800"
+                                  >
+                                    {character.name}
+                                    <button
+                                      type="button"
+                                      onClick={() => removePlayerCharacterFromEdit(character.id)}
+                                      className="ml-2 text-emerald-600 hover:text-emerald-800"
+                                    >
+                                      x
+                                    </button>
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                             <div className="flex gap-2">
                               <button
                                 onClick={saveEditNote}
@@ -1011,90 +1163,57 @@ export default function SessionDetailPage() {
           </section>
 
           <aside className="rounded-xl bg-white p-6 shadow-sm">
-            <h2 className="text-lg font-semibold text-slate-900">Campaign Clock</h2>
-            <p className="mt-2 text-sm text-slate-600">Current in-game time</p>
-            <div className="mt-4 space-y-3">
-              {campaign ? (
-                <>
-                  {campaign.ingame_year && campaign.ingame_month && campaign.ingame_day ? (
-                    <div className="text-center">
-                      <div className="text-2xl font-mono font-bold text-slate-900">
-                        {campaign.ingame_year}-{String(campaign.ingame_month).padStart(2, '0')}-{String(campaign.ingame_day).padStart(2, '0')}
-                      </div>
-                      <div className="text-sm text-slate-600">Date</div>
-                    </div>
-                  ) : campaign.ingame_month && campaign.ingame_day ? (
-                    <div className="text-center">
-                      <div className="text-2xl font-mono font-bold text-slate-900">
-                        Month {campaign.ingame_month}, Day {campaign.ingame_day}
-                      </div>
-                      <div className="text-sm text-slate-600">Date</div>
-                    </div>
-                  ) : campaign.ingame_day ? (
-                    <div className="text-center">
-                      <div className="text-2xl font-mono font-bold text-slate-900">
-                        Day {campaign.ingame_day}
-                      </div>
-                      <div className="text-sm text-slate-600">Date</div>
-                    </div>
-                  ) : (
-                    <div className="text-center text-sm text-slate-500">No date set</div>
-                  )}
-                  {campaign.ingame_hour != null && campaign.ingame_minute != null ? (
-                    <div className="text-center">
-                      <div className="text-2xl font-mono font-bold text-slate-900">
-                        {String(campaign.ingame_hour).padStart(2, '0')}:{String(campaign.ingame_minute).padStart(2, '0')}
-                      </div>
-                      <div className="text-sm text-slate-600">Time</div>
-                    </div>
-                  ) : (
-                    <div className="text-center text-sm text-slate-500">No time set</div>
-                  )}
-                  {calendarState && (
-                    <div className="text-center text-sm text-slate-600">
-                      {calendarState.formatted}
-                    </div>
-                  )}
-                </>
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Player Characters</h2>
+              <p className="mt-2 text-sm text-slate-600">Active characters in this campaign.</p>
+              {activePlayerCharacters.length === 0 ? (
+                <p className="mt-4 text-sm text-slate-500">No active player characters.</p>
               ) : (
-                <div className="text-center text-sm text-slate-500">Loading campaign clock...</div>
+                <div className="mt-4 space-y-1.5">
+                  {activePlayerCharacters.map((character) => {
+                    const isSelectedForDraft = selectedPlayerCharacterIds.includes(character.id);
+                    const isSelectedForEdit = editingPlayerCharacterIds.includes(character.id);
+                    const isSelected = editingNoteId ? isSelectedForEdit : isSelectedForDraft;
+                    return (
+                    <button
+                      key={character.id}
+                      type="button"
+                      onClick={() => {
+                        if (editingNoteId) {
+                          togglePlayerCharacterForEdit(character.id);
+                        } else {
+                          addPlayerCharacterToDraft(character.id);
+                        }
+                      }}
+                      className={`w-full cursor-pointer rounded border px-2.5 py-2 text-left transition hover:border-slate-300 hover:bg-slate-100 ${
+                        isSelected ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <span
+                          className="mt-1 h-3 w-3 shrink-0 rounded-full border border-slate-200"
+                          style={{ backgroundColor: character.color }}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-baseline gap-1.5">
+                            <p className="truncate text-sm font-medium text-slate-900">{character.name}</p>
+                            {character.player_name && (
+                              <p className="shrink-0 truncate text-xs text-slate-500">{character.player_name}</p>
+                            )}
+                          </div>
+                          {character.notes && (
+                            <p className="mt-0.5 truncate text-xs text-slate-500">
+                              {character.notes.slice(0, 70)}
+                              {character.notes.length > 70 ? '...' : ''}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                    );
+                  })}
+                </div>
               )}
-            </div>
-            <div className="mt-4 flex items-end justify-center gap-2">
-              <div className="flex flex-col">
-                <label htmlFor="manual-hour" className="text-xs text-slate-500">
-                  Hour
-                </label>
-                <input
-                  id="manual-hour"
-                  type="number"
-                  min={0}
-                  max={23}
-                  value={manualHour}
-                  onChange={(e) => setManualHour(e.target.value)}
-                  className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                />
-              </div>
-              <div className="flex flex-col">
-                <label htmlFor="manual-minute" className="text-xs text-slate-500">
-                  Minute
-                </label>
-                <input
-                  id="manual-minute"
-                  type="number"
-                  min={0}
-                  max={59}
-                  value={manualMinute}
-                  onChange={(e) => setManualMinute(e.target.value)}
-                  className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                />
-              </div>
-              <button
-                onClick={setManualTime}
-                className="rounded border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700 hover:bg-slate-50"
-              >
-                Set time
-              </button>
             </div>
             <div className="mt-6 border-t border-slate-200 pt-6">
               <h2 className="text-lg font-semibold text-slate-900">Session NPCs</h2>

@@ -471,7 +471,7 @@ export async function getNotesBySession(sessionId: string): Promise<NoteWithTags
 
   const { data, error } = await supabase
     .from("notes")
-    .select("*, note_tags(tags(*)), note_npcs(npcs(*))")
+    .select("*, note_tags(tags(*)), note_npcs(npcs(*)), note_player_characters(player_characters(*))")
     .eq("session_id", sessionId)
     .eq("user_id", user.id);
 
@@ -496,7 +496,8 @@ export async function createNote(
     ingame_end_hour?: number | null;
     ingame_end_minute?: number | null;
   },
-  npcNames?: string[]
+  npcNames?: string[],
+  playerCharacterIds?: string[]
 ): Promise<Note | null> {
   const userResult = await supabase.auth.getUser();
   const user = userResult.data.user;
@@ -565,10 +566,32 @@ export async function createNote(
     }
   }
 
+  // Handle player characters if provided
+  if (playerCharacterIds && playerCharacterIds.length > 0) {
+    const uniquePlayerCharacterIds = [...new Set(playerCharacterIds.map(id => id.trim()).filter(id => id))];
+    if (uniquePlayerCharacterIds.length > 0) {
+      const notePlayerCharacters = uniquePlayerCharacterIds.map(playerCharacterId => ({
+        note_id: note.id,
+        player_character_id: playerCharacterId,
+      }));
+      const { error: pcError } = await supabase.from("note_player_characters").insert(notePlayerCharacters);
+      if (pcError) {
+        console.error("createNote note_player_characters error", pcError);
+        // Note: note is still created, just without player characters
+      }
+    }
+  }
+
   return note;
 }
 
-export async function updateNote(noteId: string, content: string, tagNames?: string[], npcNames?: string[]): Promise<Note | null> {
+export async function updateNote(
+  noteId: string,
+  content: string,
+  tagNames?: string[],
+  npcNames?: string[],
+  playerCharacterIds?: string[]
+): Promise<Note | null> {
   const userResult = await supabase.auth.getUser();
   const user = userResult.data.user;
   if (!user) {
@@ -619,6 +642,24 @@ export async function updateNote(noteId: string, content: string, tagNames?: str
       const { error: nnError } = await supabase.from("note_npcs").insert(noteNpcs);
       if (nnError) {
         console.error("updateNote note_npcs error", nnError);
+      }
+    }
+  }
+
+  // Handle player characters if provided
+  if (playerCharacterIds !== undefined) {
+    const uniquePlayerCharacterIds = [...new Set(playerCharacterIds.map(id => id.trim()).filter(id => id))];
+    // Delete existing note_player_characters
+    await supabase.from("note_player_characters").delete().eq("note_id", noteId);
+    // Create new note_player_characters
+    if (uniquePlayerCharacterIds.length > 0) {
+      const notePlayerCharacters = uniquePlayerCharacterIds.map(playerCharacterId => ({
+        note_id: noteId,
+        player_character_id: playerCharacterId,
+      }));
+      const { error: pcError } = await supabase.from("note_player_characters").insert(notePlayerCharacters);
+      if (pcError) {
+        console.error("updateNote note_player_characters error", pcError);
       }
     }
   }
@@ -728,7 +769,7 @@ export async function getNotesByCampaign(campaignId: string): Promise<NoteWithTa
 
   const { data, error } = await supabase
     .from("notes")
-    .select("*, note_tags(tags(*)), note_npcs(npcs(*))")
+    .select("*, note_tags(tags(*)), note_npcs(npcs(*)), note_player_characters(player_characters(*))")
     .eq("campaign_id", campaignId)
     .eq("user_id", user.id);
 
