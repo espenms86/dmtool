@@ -687,3 +687,35 @@ export async function getNpcsByUser(): Promise<Npc[]> {
   }
   return data ?? [];
 }
+
+export async function updateNpc(
+  npcId: string,
+  fields: {
+    race?: string | null;
+    traits?: string | null;
+    voice?: string | null;
+    image_url?: string | null;
+  }
+): Promise<Npc | null> {
+  const userResult = await supabase.auth.getUser();
+  const user = userResult.data.user;
+  if (!user) {
+    console.error("updateNpc error: not signed in");
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("npcs")
+    .update(fields)
+    .eq("id", npcId)
+    .eq("user_id", user.id)
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("updateNpc error", error);
+    return null;
+  }
+
+  return data;
+}

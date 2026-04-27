@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { getSessionById, getSessionsByCampaign, getNotesBySession, createNote, updateNote, deleteNote, getTagsByUser, getNpcsByUser, getNotesByCampaign, getCampaignById, getCampaignCalendar, updateCampaignIngameTime } from '@/lib/queries';
+import { getSessionById, getSessionsByCampaign, getNotesBySession, createNote, updateNote, deleteNote, getTagsByUser, getNpcsByUser, updateNpc, getNotesByCampaign, getCampaignById, getCampaignCalendar, updateCampaignIngameTime } from '@/lib/queries';
 import type { Session, NoteWithTags, Tag, Npc, Campaign, CampaignCalendar } from '@/lib/types';
 
 export default function SessionDetailPage() {
@@ -42,6 +42,11 @@ export default function SessionDetailPage() {
   const [passDays, setPassDays] = useState('');
   const [passHours, setPassHours] = useState('');
   const [passMinutes, setPassMinutes] = useState('');
+  const [selectedNpc, setSelectedNpc] = useState<Npc | null>(null);
+  const [npcDraft, setNpcDraft] = useState({ race: '', traits: '', voice: '', image_url: '' });
+  const [isNpcModalEditing, setIsNpcModalEditing] = useState(false);
+  const [isSavingNpc, setIsSavingNpc] = useState(false);
+  const [npcSaveError, setNpcSaveError] = useState<string | null>(null);
 
   const sortNotesNewestFirst = (notesToSort: NoteWithTags[]) => {
     return [...notesToSort].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -203,6 +208,57 @@ export default function SessionDetailPage() {
       const normalizedNpcName = npc.name.toLowerCase();
       return normalizedNpcName.includes(query) && !selectedNpcNames.has(normalizedNpcName);
     });
+  };
+
+  const openNpcModal = (npc: Npc) => {
+    setSelectedNpc(npc);
+    setNpcDraft({
+      race: npc.race ?? '',
+      traits: npc.traits ?? '',
+      voice: npc.voice ?? '',
+      image_url: npc.image_url ?? '',
+    });
+    setIsNpcModalEditing(false);
+    setNpcSaveError(null);
+  };
+
+  const closeNpcModal = () => {
+    setSelectedNpc(null);
+    setNpcDraft({ race: '', traits: '', voice: '', image_url: '' });
+    setIsNpcModalEditing(false);
+    setIsSavingNpc(false);
+    setNpcSaveError(null);
+  };
+
+  const saveNpc = async () => {
+    if (!selectedNpc) return;
+    setIsSavingNpc(true);
+    setNpcSaveError(null);
+    try {
+      if (typeof updateNpc !== 'function') {
+        throw new Error('updateNpc is not available from queries.ts');
+      }
+
+      const updatedNpc = await updateNpc(selectedNpc.id, {
+        race: npcDraft.race.trim() || null,
+        traits: npcDraft.traits.trim() || null,
+        voice: npcDraft.voice.trim() || null,
+        image_url: npcDraft.image_url.trim() || null,
+      });
+      if (!updatedNpc) {
+        throw new Error('NPC update failed');
+      }
+
+      setSelectedNpc(updatedNpc);
+      setAvailableNpcs((currentNpcs) => currentNpcs.map((npc) => npc.id === updatedNpc.id ? updatedNpc : npc));
+      await refreshNotesState();
+      setIsNpcModalEditing(false);
+    } catch (error) {
+      console.error('saveNpc error', error);
+      setNpcSaveError(error instanceof Error ? error.message : 'Could not save NPC');
+    } finally {
+      setIsSavingNpc(false);
+    }
   };
 
   const formatIngameTimestamp = (note: NoteWithTags) => {
@@ -756,9 +812,17 @@ export default function SessionDetailPage() {
                               </span>
                             ))}
                             {(note.note_npcs ?? []).map((nn) => (
-                              <span key={nn.npcs.id} className="rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
+                              <button
+                                key={nn.npcs.id}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openNpcModal(nn.npcs);
+                                }}
+                                className="rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-200"
+                              >
                                 {nn.npcs.name}
-                              </span>
+                              </button>
                             ))}
                             {!isEditing && (
                               <>
@@ -1017,6 +1081,136 @@ export default function SessionDetailPage() {
           </aside>
         </div>
       </div>
+      {selectedNpc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.2em] text-amber-600">NPC</p>
+                <h2 className="mt-1 text-xl font-semibold text-slate-900">{selectedNpc.name}</h2>
+              </div>
+              <button
+                type="button"
+                onClick={closeNpcModal}
+                className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+
+            {selectedNpc.image_url && !isNpcModalEditing && (
+              <div className="mt-4 overflow-hidden rounded-lg border border-slate-200">
+                <div
+                  role="img"
+                  aria-label={selectedNpc.name}
+                  className="h-64 w-full bg-cover bg-center"
+                  style={{ backgroundImage: `url(${selectedNpc.image_url})` }}
+                />
+              </div>
+            )}
+
+            {isNpcModalEditing ? (
+              <div className="mt-4 space-y-3">
+                <input
+                  type="text"
+                  placeholder="Race"
+                  value={npcDraft.race}
+                  onChange={(e) => setNpcDraft({ ...npcDraft, race: e.target.value })}
+                  className="w-full rounded border border-slate-200 px-3 py-2 text-sm text-slate-900 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                />
+                <textarea
+                  placeholder="Traits"
+                  rows={3}
+                  value={npcDraft.traits}
+                  onChange={(e) => setNpcDraft({ ...npcDraft, traits: e.target.value })}
+                  className="w-full rounded border border-slate-200 px-3 py-2 text-sm text-slate-900 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                />
+                <textarea
+                  placeholder="Voice"
+                  rows={2}
+                  value={npcDraft.voice}
+                  onChange={(e) => setNpcDraft({ ...npcDraft, voice: e.target.value })}
+                  className="w-full rounded border border-slate-200 px-3 py-2 text-sm text-slate-900 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                />
+                <input
+                  type="url"
+                  placeholder="Image URL"
+                  value={npcDraft.image_url}
+                  onChange={(e) => setNpcDraft({ ...npcDraft, image_url: e.target.value })}
+                  className="w-full rounded border border-slate-200 px-3 py-2 text-sm text-slate-900 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                />
+                {npcDraft.image_url.trim() && (
+                  <div className="overflow-hidden rounded-lg border border-slate-200">
+                    <div
+                      role="img"
+                      aria-label={selectedNpc.name}
+                      className="h-48 w-full bg-cover bg-center"
+                      style={{ backgroundImage: `url(${npcDraft.image_url})` }}
+                    />
+                  </div>
+                )}
+                {npcSaveError && (
+                  <p className="text-sm text-red-600">{npcSaveError}</p>
+                )}
+              </div>
+            ) : (
+              <dl className="mt-4 space-y-3 text-sm">
+                <div>
+                  <dt className="font-medium text-slate-500">Race</dt>
+                  <dd className="mt-1 text-slate-900">{selectedNpc.race || "Not set"}</dd>
+                </div>
+                <div>
+                  <dt className="font-medium text-slate-500">Traits</dt>
+                  <dd className="mt-1 whitespace-pre-wrap text-slate-900">{selectedNpc.traits || "Not set"}</dd>
+                </div>
+                <div>
+                  <dt className="font-medium text-slate-500">Voice</dt>
+                  <dd className="mt-1 whitespace-pre-wrap text-slate-900">{selectedNpc.voice || "Not set"}</dd>
+                </div>
+              </dl>
+            )}
+
+            <div className="mt-5 flex justify-end gap-2">
+              {isNpcModalEditing ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNpcDraft({
+                        race: selectedNpc.race ?? '',
+                        traits: selectedNpc.traits ?? '',
+                        voice: selectedNpc.voice ?? '',
+                        image_url: selectedNpc.image_url ?? '',
+                      });
+                      setIsNpcModalEditing(false);
+                    }}
+                    className="rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                    disabled={isSavingNpc}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveNpc}
+                    className="rounded bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:bg-amber-300"
+                    disabled={isSavingNpc}
+                  >
+                    {isSavingNpc ? 'Saving...' : 'Save'}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsNpcModalEditing(true)}
+                  className="rounded bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
