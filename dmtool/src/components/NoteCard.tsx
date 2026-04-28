@@ -12,7 +12,7 @@ export function NoteCard({ note, href }: NoteCardProps) {
       <h3 className="text-lg font-semibold text-slate-900">
         {href ? <Link href={href}>{note.title}</Link> : note.title}
       </h3>
-      <p className="mt-2 text-sm leading-6 text-slate-600">
+      <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-600">
         {note.content || "No note content yet."}
       </p>
       <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">

@@ -2,9 +2,44 @@
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getSessionById, getSessionsByCampaign, getNotesBySession, createNote, updateNote, deleteNote, getTagsByUser, getNpcsByUser, updateNpc, getNotesByCampaign, getCampaignById, getCampaignCalendar, updateCampaignIngameTime, getPlayerCharactersByCampaign } from '@/lib/queries';
 import type { Session, NoteWithTags, Tag, Npc, Campaign, CampaignCalendar, PlayerCharacter } from '@/lib/types';
+
+type CombatParticipant = {
+  id: string;
+  type: 'pc' | 'enemy';
+  name: string;
+  initiative: string;
+  hp: string;
+  status: string;
+  hasSurpriseTurn: boolean;
+  playerCharacterId?: string;
+};
+
+type CombatActionParticipant = {
+  id: string;
+  type: 'pc' | 'enemy';
+  name: string;
+  initiative: string;
+  hp: string;
+  status: string;
+  hasSurpriseTurn: boolean;
+};
+
+type CombatAction = {
+  id: string;
+  roundLabel: string;
+  actorId: string;
+  actorName: string;
+  actor: CombatActionParticipant;
+  targetIds: string[];
+  targetNames: string[];
+  targets: CombatActionParticipant[];
+  text: string;
+  damage?: string;
+  statusChange?: string;
+};
 
 export default function SessionDetailPage() {
   const params = useParams();
@@ -48,8 +83,21 @@ export default function SessionDetailPage() {
   const [selectedNpc, setSelectedNpc] = useState<Npc | null>(null);
   const [npcDraft, setNpcDraft] = useState({ race: '', traits: '', voice: '', image_url: '' });
   const [isNpcModalEditing, setIsNpcModalEditing] = useState(false);
+  const [combatModalOpen, setCombatModalOpen] = useState(false);
+  const [combatParticipants, setCombatParticipants] = useState<CombatParticipant[]>([]);
+  const [currentTurnIndex, setCurrentTurnIndex] = useState(0);
+  const [currentRound, setCurrentRound] = useState(1);
+  const [surpriseRoundActive, setSurpriseRoundActive] = useState(false);
+  const [surpriseRoundCompleted, setSurpriseRoundCompleted] = useState(false);
+  const [combatActions, setCombatActions] = useState<CombatAction[]>([]);
+  const [combatActionDraft, setCombatActionDraft] = useState<{ targetIds: string[]; text: string; statusChange: string; damage: string }>({ targetIds: [], text: '', statusChange: '', damage: '' });
+  const [combatName, setCombatName] = useState('');
+  const [pcInitiatives, setPcInitiatives] = useState<Record<string, string>>({});
+  const [pcSurpriseTurns, setPcSurpriseTurns] = useState<Record<string, boolean>>({});
+  const [enemyDraft, setEnemyDraft] = useState({ name: '', initiative: '', hp: '', status: 'in combat', hasSurpriseTurn: false });
   const [isSavingNpc, setIsSavingNpc] = useState(false);
   const [npcSaveError, setNpcSaveError] = useState<string | null>(null);
+  const enemyNameInputRef = useRef<HTMLInputElement | null>(null);
 
   const sortNotesNewestFirst = (notesToSort: NoteWithTags[]) => {
     return [...notesToSort].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -75,6 +123,19 @@ export default function SessionDetailPage() {
   const activePlayerCharacters = playerCharacters.filter((character) => character.status === 'active');
   const selectedPlayerCharacters = playerCharacters.filter((character) => selectedPlayerCharacterIds.includes(character.id));
   const editingPlayerCharacters = playerCharacters.filter((character) => editingPlayerCharacterIds.includes(character.id));
+  const sortedCombatParticipants = [...combatParticipants].sort((a, b) => {
+    const initiativeA = Number.parseInt(a.initiative, 10);
+    const initiativeB = Number.parseInt(b.initiative, 10);
+    const safeInitiativeA = Number.isNaN(initiativeA) ? -Infinity : initiativeA;
+    const safeInitiativeB = Number.isNaN(initiativeB) ? -Infinity : initiativeB;
+    return safeInitiativeB - safeInitiativeA;
+  });
+  const surpriseParticipants = sortedCombatParticipants.filter((participant) => participant.hasSurpriseTurn);
+  const turnOrderParticipants = surpriseRoundActive ? surpriseParticipants : sortedCombatParticipants;
+  const currentCombatParticipant = turnOrderParticipants[currentTurnIndex] ?? null;
+  const canAutoStartSurpriseRound = !surpriseRoundCompleted && (
+    surpriseRoundActive || (currentRound === 1 && currentTurnIndex === 0 && combatActions.length === 0)
+  );
 
   const hasSearchQuery = searchQuery.trim().length > 0;
   const filteredNotes = (searchScope === 'campaign' && hasSearchQuery ? campaignNotes : notes).filter((note) => {
@@ -247,6 +308,390 @@ export default function SessionDetailPage() {
 
   const removePlayerCharacterFromEdit = (characterId: string) => {
     setEditingPlayerCharacterIds((current) => current.filter((id) => id !== characterId));
+  };
+
+  const addPlayerCharacterToCombat = (character: PlayerCharacter) => {
+    const hasSurpriseTurn = pcSurpriseTurns[character.id] ?? false;
+    setCombatParticipants((current) => {
+      if (current.some((participant) => participant.playerCharacterId === character.id)) {
+        return current;
+      }
+
+      return [
+        ...current,
+        {
+          id: `pc-${character.id}`,
+          type: 'pc',
+          name: character.name,
+          initiative: pcInitiatives[character.id]?.trim() ?? '',
+          hp: '',
+          status: 'in combat',
+          hasSurpriseTurn,
+          playerCharacterId: character.id,
+        },
+      ];
+    });
+    if (hasSurpriseTurn && canAutoStartSurpriseRound) {
+      setSurpriseRoundActive(true);
+      setCurrentRound(0);
+      setCurrentTurnIndex(0);
+    }
+  };
+
+  const addEnemyToCombat = () => {
+    const enemyName = enemyDraft.name.trim();
+    if (!enemyName) return;
+
+    setCombatParticipants((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        type: 'enemy',
+        name: enemyName,
+        initiative: enemyDraft.initiative.trim(),
+        hp: enemyDraft.hp.trim(),
+        status: enemyDraft.status === 'hidden' ? 'hidden' : 'in combat',
+        hasSurpriseTurn: enemyDraft.hasSurpriseTurn,
+      },
+    ]);
+    if (enemyDraft.hasSurpriseTurn && canAutoStartSurpriseRound) {
+      setSurpriseRoundActive(true);
+      setCurrentRound(0);
+      setCurrentTurnIndex(0);
+    }
+    setEnemyDraft({ name: '', initiative: '', hp: '', status: 'in combat', hasSurpriseTurn: false });
+    setTimeout(() => enemyNameInputRef.current?.focus(), 0);
+  };
+
+  const updateCombatParticipantInitiative = (participantId: string, initiative: string) => {
+    setCombatParticipants((current) => current.map((participant) => (
+      participant.id === participantId ? { ...participant, initiative } : participant
+    )));
+  };
+
+  const advanceCombatTurn = () => {
+    if (turnOrderParticipants.length === 0) return;
+
+    if (currentTurnIndex < turnOrderParticipants.length - 1) {
+      setCurrentTurnIndex((current) => current + 1);
+      return;
+    }
+
+    setCurrentTurnIndex(0);
+    if (surpriseRoundActive) {
+      setSurpriseRoundActive(false);
+      setSurpriseRoundCompleted(true);
+      setCurrentRound(1);
+    } else {
+      setCurrentRound((current) => current + 1);
+    }
+  };
+
+  const removeCombatParticipant = (participantId: string) => {
+    setCombatParticipants((current) => {
+      const nextParticipants = current.filter((item) => item.id !== participantId);
+      const nextTurnOrderLength = surpriseRoundActive
+        ? nextParticipants.filter((participant) => participant.hasSurpriseTurn).length
+        : nextParticipants.length;
+      if (canAutoStartSurpriseRound) {
+        const nextSurpriseCount = nextParticipants.filter((participant) => participant.hasSurpriseTurn).length;
+        if (nextSurpriseCount > 0) {
+          setSurpriseRoundActive(true);
+          setCurrentRound(0);
+          setCurrentTurnIndex((currentIndex) => Math.min(currentIndex, nextSurpriseCount - 1));
+        } else {
+          setSurpriseRoundActive(false);
+          setCurrentRound(1);
+          setCurrentTurnIndex(0);
+        }
+      } else {
+        setCurrentTurnIndex((currentIndex) => (
+          nextTurnOrderLength === 0 ? 0 : Math.min(currentIndex, nextTurnOrderLength - 1)
+        ));
+      }
+      return nextParticipants;
+    });
+  };
+
+  const toggleCombatActionTarget = (participantId: string) => {
+    setCombatActionDraft((current) => ({
+      ...current,
+      targetIds: current.targetIds.includes(participantId)
+        ? current.targetIds.filter((id) => id !== participantId)
+        : [...current.targetIds, participantId],
+    }));
+  };
+
+  const addCombatActionEntry = () => {
+    if (!currentCombatParticipant) return false;
+
+    const actionText = combatActionDraft.text.trim();
+    const damageValue = Number.parseInt(combatActionDraft.damage, 10);
+    const hasDamage = !Number.isNaN(damageValue) && damageValue > 0;
+    if (combatActionDraft.targetIds.length === 0 && !actionText && !combatActionDraft.statusChange && !hasDamage) return false;
+
+    const selectedTargets = combatParticipants.filter((participant) => combatActionDraft.targetIds.includes(participant.id));
+    const statusChange = combatActionDraft.statusChange;
+    const shouldApplySelfStatus = selectedTargets.length === 0
+      && currentCombatParticipant.type === 'enemy'
+      && (statusChange === 'fled' || statusChange === 'hidden' || statusChange === 'dead');
+    const selectedEnemyTargetIds = selectedTargets
+      .filter((participant) => participant.type === 'enemy')
+      .map((participant) => participant.id);
+    const damageDeadEnemyIds: string[] = [];
+    const nextActionTargets = selectedTargets.map((target) => {
+      if (target.type !== 'enemy') return target;
+
+      let nextHp = target.hp;
+      let nextStatus = statusChange || target.status;
+      if (hasDamage) {
+        const currentHp = Number.parseInt(target.hp, 10);
+        const clampedHp = Math.max(0, (Number.isNaN(currentHp) ? 0 : currentHp) - damageValue);
+        nextHp = String(clampedHp);
+        if (clampedHp === 0) {
+          nextStatus = 'dead';
+          damageDeadEnemyIds.push(target.id);
+        }
+      }
+
+      return { ...target, hp: nextHp, status: nextStatus };
+    });
+    const nextActionActor = shouldApplySelfStatus ? { ...currentCombatParticipant, status: statusChange } : currentCombatParticipant;
+    const statusRemovalEnemyIds = statusChange === 'dead' || statusChange === 'fled'
+      ? shouldApplySelfStatus
+        ? [currentCombatParticipant.id]
+        : selectedEnemyTargetIds
+      : [];
+    const removalCandidateIds = Array.from(new Set([...statusRemovalEnemyIds, ...damageDeadEnemyIds]));
+    const removeEnemyIds = removalCandidateIds.length > 0 && window.confirm(
+      shouldApplySelfStatus
+        ? `Remove ${statusChange} enemy from turn order?`
+        : 'Remove dead/fled enemies from turn order?'
+    ) ? removalCandidateIds : [];
+
+    if (selectedEnemyTargetIds.length > 0 || shouldApplySelfStatus) {
+      const computedTargetById = new Map(nextActionTargets.map((target) => [target.id, target]));
+      setCombatParticipants((current) => {
+        const nextParticipants = current.map((participant) => {
+          if (participant.id === currentCombatParticipant.id && shouldApplySelfStatus) {
+            return nextActionActor;
+          }
+          return computedTargetById.get(participant.id) ?? participant;
+        }).filter((participant) => !removeEnemyIds.includes(participant.id));
+        const nextTurnOrderLength = surpriseRoundActive
+          ? nextParticipants.filter((participant) => participant.hasSurpriseTurn).length
+          : nextParticipants.length;
+        if (canAutoStartSurpriseRound) {
+          const nextSurpriseCount = nextParticipants.filter((participant) => participant.hasSurpriseTurn).length;
+          if (nextSurpriseCount > 0) {
+            setSurpriseRoundActive(true);
+            setCurrentRound(0);
+            setCurrentTurnIndex((currentIndex) => Math.min(currentIndex, nextSurpriseCount - 1));
+          } else {
+            setSurpriseRoundActive(false);
+            setCurrentRound(1);
+            setCurrentTurnIndex(0);
+          }
+        } else {
+          setCurrentTurnIndex((currentIndex) => (
+            nextTurnOrderLength === 0 ? 0 : Math.min(currentIndex, nextTurnOrderLength - 1)
+          ));
+        }
+        return nextParticipants;
+      });
+    }
+
+    const selectedEnemyActionTargets = nextActionTargets.filter((target) => target.type === 'enemy');
+    const allEnemyTargetsDead = selectedEnemyActionTargets.length > 0 && selectedEnemyActionTargets.every((target) => target.status === 'dead');
+    const appliedStatusChange = statusChange && selectedEnemyTargetIds.length > 0
+      ? statusChange
+      : shouldApplySelfStatus
+        ? statusChange
+        : allEnemyTargetsDead
+          ? 'dead'
+          : '';
+
+    setCombatActions((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        roundLabel: surpriseRoundActive ? 'Surprise round' : `Round ${currentRound}`,
+        actorId: nextActionActor.id,
+        actorName: nextActionActor.name,
+        actor: nextActionActor,
+        targetIds: selectedTargets.map((target) => target.id),
+        targetNames: selectedTargets.map((target) => target.name),
+        targets: nextActionTargets,
+        text: actionText,
+        damage: hasDamage ? String(damageValue) : undefined,
+        statusChange: appliedStatusChange || undefined,
+      },
+    ]);
+    setCombatActionDraft({ targetIds: [], text: '', statusChange: '', damage: '' });
+    return true;
+  };
+
+  const addCombatAction = () => {
+    addCombatActionEntry();
+  };
+
+  const addCombatActionAndFinishTurn = () => {
+    if (addCombatActionEntry()) {
+      advanceCombatTurn();
+    }
+  };
+
+  const buildCombatSummary = () => {
+    const finalParticipants = new Map<string, CombatActionParticipant>();
+    const normalizeFinalParticipant = (participant: CombatActionParticipant): CombatActionParticipant => {
+      if (participant.type !== 'enemy') return participant;
+
+      const hp = Number.parseInt(participant.hp, 10);
+      return {
+        ...participant,
+        status: !Number.isNaN(hp) && hp <= 0 ? 'dead' : participant.status,
+      };
+    };
+
+    combatParticipants.forEach((participant) => finalParticipants.set(participant.id, normalizeFinalParticipant(participant)));
+    combatActions.forEach((action) => {
+      finalParticipants.set(action.actor.id, normalizeFinalParticipant({
+        ...action.actor,
+        status: action.statusChange && action.targets.length === 0 && action.actor.type === 'enemy'
+          ? action.statusChange
+          : finalParticipants.get(action.actor.id)?.status ?? action.actor.status,
+      }));
+
+      const damageValue = Number.parseInt(action.damage ?? '', 10);
+      const hasDamage = !Number.isNaN(damageValue) && damageValue > 0;
+      action.targets.forEach((target) => {
+        const currentParticipant = finalParticipants.get(target.id);
+        let nextParticipant: CombatActionParticipant = {
+          ...target,
+          status: action.statusChange && target.type === 'enemy' ? action.statusChange : target.status,
+        };
+
+        if (target.type === 'enemy' && hasDamage) {
+          const targetHp = Number.parseInt(target.hp, 10);
+          const currentHp = Number.parseInt(currentParticipant?.hp ?? '', 10);
+          if (!Number.isNaN(targetHp) && !Number.isNaN(currentHp) && targetHp > currentHp) {
+            nextParticipant = {
+              ...nextParticipant,
+              hp: String(Math.max(0, currentHp - damageValue)),
+            };
+          }
+        }
+
+        finalParticipants.set(target.id, normalizeFinalParticipant(nextParticipant));
+      });
+    });
+    const summaryParticipantList = Array.from(finalParticipants.values());
+    const enemyStatusCounts = summaryParticipantList
+      .filter((participant) => participant.type === 'enemy')
+      .reduce((counts, participant) => {
+        const status = participant.status || 'in combat';
+        counts[status] = (counts[status] ?? 0) + 1;
+        return counts;
+      }, {} as Record<string, number>);
+    const participantLines = summaryParticipantList.length === 0
+      ? ['- No participants recorded']
+      : summaryParticipantList.map((participant) => {
+        if (participant.type === 'pc') {
+          return `- PC: ${participant.name} (Initiative ${participant.initiative || '-'})`;
+        }
+
+        return `- Enemy: ${participant.name} (Initiative ${participant.initiative || '-'}, HP ${participant.hp || '-'}, Status ${participant.status})`;
+      });
+    const actionsByRound = combatActions.reduce((groups, action) => {
+      if (!groups.has(action.roundLabel)) {
+        groups.set(action.roundLabel, []);
+      }
+      groups.get(action.roundLabel)?.push(action);
+      return groups;
+    }, new Map<string, CombatAction[]>());
+    const actionLines = actionsByRound.size === 0
+      ? ['- No actions recorded']
+      : Array.from(actionsByRound.entries()).flatMap(([roundLabel, actions], index) => [
+        ...(index > 0 ? [''] : []),
+        `${roundLabel}:`,
+        ...actions.map((action) => {
+          const actionText = action.text ? `"${action.text}"` : '"No action text"';
+          const targets = action.targetNames.length > 0 ? action.targetNames.join(', ') : 'no target';
+          const damageNote = action.damage ? `, ${action.damage} damage` : '';
+          const statusChangedTargets = action.statusChange ? action.targets.filter((target) => target.type === 'enemy') : [];
+          const hasSelfTarget = action.targets.length === 1 && action.targets[0].id === action.actorId;
+          const hasTargetlessSelfStatus = action.statusChange && action.targets.length === 0 && action.actor.type === 'enemy';
+          const targetText = hasSelfTarget
+            ? ''
+            : hasTargetlessSelfStatus
+              ? ''
+              : ` on ${action.targetNames.length > 0 ? targets : 'no target'}`;
+          const statusNote = hasTargetlessSelfStatus
+            ? `, status is ${action.statusChange}`
+            : action.statusChange && statusChangedTargets.length > 0
+              ? `, ${statusChangedTargets.length === 1 ? 'target is' : 'targets are'} ${action.statusChange}`
+              : '';
+          return `${action.actorName}: ${actionText}${targetText}${damageNote}${statusNote}`;
+        }),
+      ]);
+    const resultLines = [
+      { label: 'Dead', count: enemyStatusCounts.dead ?? 0 },
+      { label: 'Fled', count: enemyStatusCounts.fled ?? 0 },
+      { label: 'Hidden', count: enemyStatusCounts.hidden ?? 0 },
+      { label: 'Still in combat', count: enemyStatusCounts['in combat'] ?? 0 },
+    ]
+      .filter((result) => result.count > 0)
+      .map((result) => `- ${result.label}: ${result.count}`);
+    const endedOnLabel = combatActions.length > 0
+      ? combatActions[combatActions.length - 1].roundLabel
+      : surpriseRoundActive ? 'Surprise round' : `Round ${currentRound}`;
+
+    return [
+      'Participants:',
+      ...participantLines,
+      '',
+      'Actions:',
+      ...actionLines,
+      '',
+      `Ended on: ${endedOnLabel}`,
+      '',
+      'Result:',
+      ...(resultLines.length > 0 ? resultLines : ['- No enemy results recorded']),
+    ].join('\n');
+  };
+
+  const endCombatAndCreateNote = async () => {
+    const noteTitle = combatName.trim() || 'Combat Summary';
+    const summary = buildCombatSummary();
+    const linkedPlayerCharacterIds = combatParticipants
+      .map((participant) => participant.playerCharacterId)
+      .filter((id): id is string => Boolean(id));
+    const newNote = await createNote(
+      campaignId,
+      sessionId,
+      noteTitle,
+      summary,
+      ['combat'],
+      undefined,
+      [],
+      linkedPlayerCharacterIds
+    );
+
+    if (!newNote) return;
+
+    await refreshNotesState();
+    setCombatModalOpen(false);
+    setCombatParticipants([]);
+    setCombatActions([]);
+    setEnemyDraft({ name: '', initiative: '', hp: '', status: 'in combat', hasSurpriseTurn: false });
+    setCombatActionDraft({ targetIds: [], text: '', statusChange: '', damage: '' });
+    setCombatName('');
+    setPcInitiatives({});
+    setPcSurpriseTurns({});
+    setCurrentTurnIndex(0);
+    setCurrentRound(1);
+    setSurpriseRoundActive(false);
+    setSurpriseRoundCompleted(false);
   };
 
   const getFilteredNpcSuggestions = (inputValue: string, currentNpcs: string[]) => {
@@ -680,8 +1125,19 @@ export default function SessionDetailPage() {
 
           <section className="space-y-6">
             <div className="rounded-xl bg-white p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-slate-900">Create new note</h2>
-              <p className="mt-1 text-sm text-slate-600">Quick note capture for this session.</p>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">Create new note</h2>
+                  <p className="mt-1 text-sm text-slate-600">Quick note capture for this session.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCombatModalOpen(true)}
+                  className="rounded border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Start combat
+                </button>
+              </div>
               <form onSubmit={handleCreateNote} className="mt-4 space-y-4">
                 <input
                   type="text"
@@ -1120,7 +1576,7 @@ export default function SessionDetailPage() {
                           </div>
                         ) : (
                           note.content && (
-                            <p className="text-sm leading-6 text-slate-600">
+                            <p className="whitespace-pre-line text-sm leading-6 text-slate-600">
                               {isExpanded ? note.content : `${note.content.slice(0, 100)}${note.content.length > 100 ? '...' : ''}`}
                             </p>
                           )
@@ -1249,6 +1705,399 @@ export default function SessionDetailPage() {
           </aside>
         </div>
       </div>
+      {combatModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4"
+          onClick={() => setCombatModalOpen(false)}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-6">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-900">Combat Tracker</h2>
+                <p className="mt-2 text-sm text-slate-600">Set up participants for this combat.</p>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  type="button"
+                  onClick={endCombatAndCreateNote}
+                  disabled={combatParticipants.length === 0 && combatActions.length === 0}
+                  className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                >
+                  End combat
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCombatModalOpen(false)}
+                  className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-y-auto p-6">
+            <input
+              type="text"
+              placeholder="Combat name, e.g. Goblin ambush"
+              value={combatName}
+              onChange={(e) => setCombatName(e.target.value)}
+              className="mb-5 w-full rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+            />
+            <div className="grid gap-6 lg:grid-cols-2">
+              <section>
+                <h3 className="text-sm font-semibold text-slate-900">Player Characters</h3>
+                {activePlayerCharacters.filter((character) => !combatParticipants.some((participant) => participant.playerCharacterId === character.id)).length === 0 ? (
+                  <p className="mt-3 text-sm text-slate-500">
+                    {activePlayerCharacters.length === 0 ? 'No active player characters.' : 'All active player characters are in combat.'}
+                  </p>
+                ) : (
+                  <div className="mt-3 space-y-1.5">
+                    {activePlayerCharacters.filter((character) => !combatParticipants.some((participant) => participant.playerCharacterId === character.id)).map((character) => {
+                      const combatParticipant = combatParticipants.find((participant) => participant.playerCharacterId === character.id);
+                      const isInCombat = Boolean(combatParticipant);
+                      const initiativeValue = combatParticipant?.initiative ?? pcInitiatives[character.id] ?? '';
+                      return (
+                        <div
+                          key={character.id}
+                          className="flex items-center justify-between gap-2 rounded border border-slate-200 bg-slate-50 px-2 py-1.5"
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span
+                              className="h-2.5 w-2.5 shrink-0 rounded-full border border-slate-200"
+                              style={{ backgroundColor: character.color }}
+                            />
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-medium text-slate-900">{character.name}</p>
+                              {character.player_name && (
+                                <p className="truncate text-xs text-slate-500">{character.player_name}</p>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <label className="flex items-center gap-1 text-xs text-slate-600" title="Surprise">
+                              <input
+                                type="checkbox"
+                                checked={pcSurpriseTurns[character.id] ?? false}
+                                onChange={(e) => setPcSurpriseTurns((current) => ({ ...current, [character.id]: e.target.checked }))}
+                                className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              Surprise
+                            </label>
+                            <input
+                              type="text"
+                              aria-label={`${character.name} initiative`}
+                              placeholder="Init"
+                              value={initiativeValue}
+                              onChange={(e) => {
+                                if (combatParticipant) {
+                                  updateCombatParticipantInitiative(combatParticipant.id, e.target.value);
+                                } else {
+                                  setPcInitiatives((current) => ({ ...current, [character.id]: e.target.value }));
+                                }
+                              }}
+                              className="w-14 rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => addPlayerCharacterToCombat(character)}
+                              disabled={isInCombat}
+                              className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                            >
+                              {isInCombat ? 'Added' : 'Add'}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              <section>
+                <h3 className="text-sm font-semibold text-slate-900">Add Enemy</h3>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <input
+                    ref={enemyNameInputRef}
+                    type="text"
+                    placeholder="Enemy name"
+                    value={enemyDraft.name}
+                    onChange={(e) => setEnemyDraft({ ...enemyDraft, name: e.target.value })}
+                    className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 sm:col-span-2"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Initiative"
+                    value={enemyDraft.initiative}
+                    onChange={(e) => setEnemyDraft({ ...enemyDraft, initiative: e.target.value })}
+                    className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  />
+                  <input
+                    type="text"
+                    placeholder="HP"
+                    value={enemyDraft.hp}
+                    onChange={(e) => setEnemyDraft({ ...enemyDraft, hp: e.target.value })}
+                    className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  />
+                  <select
+                    value={enemyDraft.status}
+                    onChange={(e) => setEnemyDraft({ ...enemyDraft, status: e.target.value })}
+                    className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  >
+                    <option value="in combat">in combat</option>
+                    <option value="hidden">hidden</option>
+                  </select>
+                  <label className="flex items-center gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={enemyDraft.hasSurpriseTurn}
+                      onChange={(e) => setEnemyDraft({ ...enemyDraft, hasSurpriseTurn: e.target.checked })}
+                      className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    Surprise
+                  </label>
+                  <button
+                    type="button"
+                    onClick={addEnemyToCombat}
+                    className="rounded border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    Add enemy
+                  </button>
+                </div>
+              </section>
+            </div>
+
+            <section className="mt-6 border-t border-slate-200 pt-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">Turn Order</h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {surpriseRoundActive ? 'Surprise round' : `Round ${currentRound}`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={advanceCombatTurn}
+                  className="rounded border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Next turn
+                </button>
+              </div>
+
+              {surpriseRoundActive && (
+                <p className="mt-2 text-xs text-slate-500">Showing only participants marked for surprise.</p>
+              )}
+
+              {turnOrderParticipants.length === 0 ? (
+                <p className="mt-3 text-sm text-slate-500">Add participants to build turn order.</p>
+              ) : (
+                <div className="mt-3 space-y-1.5">
+                  {turnOrderParticipants.map((participant, index) => {
+                    const isCurrentTurn = index === currentTurnIndex;
+                    return (
+                      <div
+                        key={participant.id}
+                        className={`flex items-center justify-between gap-2 rounded border px-2 py-1.5 ${
+                          isCurrentTurn ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-slate-50'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-medium uppercase text-slate-600">
+                              {participant.type}
+                            </span>
+                            <p className="truncate text-xs font-medium text-slate-900">{participant.name}</p>
+                            {isCurrentTurn && (
+                              <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
+                                Current turn
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-0.5 text-xs text-slate-500">
+                            Initiative: {participant.initiative || '-'}{participant.type === 'enemy' ? ` / HP: ${participant.hp || '-'}` : ''} / Status: {participant.status}
+                          </p>
+                        </div>
+                        <span className="shrink-0 text-xs font-semibold text-slate-700">
+                          {participant.initiative || '-'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            <section className="mt-6 border-t border-slate-200 pt-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">Action Log</h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Current actor: {currentCombatParticipant ? currentCombatParticipant.name : 'No active participant'}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCombatActionDraft((current) => ({
+                      ...current,
+                      targetIds: combatParticipants.map((participant) => participant.id),
+                    }))}
+                    className="rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCombatActionDraft((current) => ({ ...current, targetIds: [] }))}
+                    className="rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              {combatParticipants.length === 0 ? (
+                <p className="mt-3 text-sm text-slate-500">Add participants before logging actions.</p>
+              ) : (
+                <>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {combatParticipants.map((participant) => (
+                      <label
+                        key={participant.id}
+                        className="flex items-center gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={combatActionDraft.targetIds.includes(participant.id)}
+                          onChange={() => toggleCombatActionTarget(participant.id)}
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>{participant.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <textarea
+                    placeholder="e.g. Fireball, claw attack, intimidation..."
+                    rows={3}
+                    value={combatActionDraft.text}
+                    onChange={(e) => setCombatActionDraft({ ...combatActionDraft, text: e.target.value })}
+                    className="mt-3 w-full rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  />
+                  <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_120px]">
+                    <select
+                      value={combatActionDraft.statusChange}
+                      onChange={(e) => setCombatActionDraft({ ...combatActionDraft, statusChange: e.target.value })}
+                      className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    >
+                      <option value="">no status change</option>
+                      <option value="in combat">in combat</option>
+                      <option value="hidden">hidden</option>
+                      <option value="dead">dead</option>
+                      <option value="fled">fled</option>
+                    </select>
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="Damage"
+                      value={combatActionDraft.damage}
+                      onChange={(e) => setCombatActionDraft({ ...combatActionDraft, damage: e.target.value })}
+                      className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={addCombatAction}
+                      className="rounded border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      Add action
+                    </button>
+                    <button
+                      type="button"
+                      onClick={addCombatActionAndFinishTurn}
+                      className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                    >
+                      Add and finish turn
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {combatActions.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  {combatActions.map((action) => (
+                    <div
+                      key={action.id}
+                      className="flex flex-wrap items-start justify-between gap-3 rounded border border-slate-200 bg-slate-50 px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium uppercase text-slate-500">{action.roundLabel}</p>
+                        <p className="mt-1 text-sm font-medium text-slate-900">
+                          {action.actorName} {'->'} {action.targetNames.length > 0 ? action.targetNames.join(', ') : 'No target'}
+                        </p>
+                        {action.text && (
+                          <p className="mt-1 whitespace-pre-wrap text-sm text-slate-600">{action.text}</p>
+                        )}
+                        {action.damage && (
+                          <p className="mt-1 text-xs text-slate-500">Damage: {action.damage}</p>
+                        )}
+                        {action.statusChange && (
+                          <p className="mt-1 text-xs text-slate-500">Set enemy target status: {action.statusChange}</p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setCombatActions((current) => current.filter((item) => item.id !== action.id))}
+                        className="rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="mt-6 border-t border-slate-200 pt-5">
+              <h3 className="text-sm font-semibold text-slate-900">Combat Participants</h3>
+              {combatParticipants.length === 0 ? (
+                <p className="mt-3 text-sm text-slate-500">No combat participants yet.</p>
+              ) : (
+                <div className="mt-3 space-y-1.5">
+                  {combatParticipants.map((participant) => (
+                    <div
+                      key={participant.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-200 bg-slate-50 px-2 py-1.5"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-medium uppercase text-slate-600">
+                            {participant.type}
+                          </span>
+                          <p className="truncate text-xs font-medium text-slate-900">{participant.name}</p>
+                        </div>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          Initiative: {participant.initiative || '-'} / HP: {participant.type === 'pc' ? 'PC controlled' : participant.hp || '-'} / Status: {participant.status}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeCombatParticipant(participant.id)}
+                        className="rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+            </div>
+          </div>
+        </div>
+      )}
       {selectedNpc && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
