@@ -73,6 +73,7 @@ export default function SessionDetailPage() {
   const [searchMode, setSearchMode] = useState<'free' | 'text' | 'tags' | 'npcs'>('free');
   const [searchScope, setSearchScope] = useState<'session' | 'campaign'>('session');
   const [campaignNotes, setCampaignNotes] = useState<NoteWithTags[]>([]);
+  const [printSummaryOpen, setPrintSummaryOpen] = useState(false);
   const [campaignCalendar, setCampaignCalendar] = useState<CampaignCalendar | null>(null);
   const [manualHour, setManualHour] = useState('');
   const [manualMinute, setManualMinute] = useState('');
@@ -161,6 +162,7 @@ export default function SessionDetailPage() {
     }
     return true;
   });
+  const chronologicalNotes = [...notes].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
   const toggleNoteExpansion = (noteId: string) => {
     setExpandedNotes(prev => {
@@ -978,8 +980,8 @@ export default function SessionDetailPage() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl space-y-6">
+    <main className="min-h-screen bg-slate-50 px-4 py-6 print:bg-white print:p-0 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl space-y-6 print:hidden">
         <Link
           href={`/campaigns/${campaignId}`}
           className="inline-block text-sm text-slate-500 hover:text-slate-700"
@@ -1622,6 +1624,13 @@ export default function SessionDetailPage() {
           </section>
 
           <aside className="rounded-xl bg-white p-6 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setPrintSummaryOpen(true)}
+              className="mb-6 w-full rounded border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Print session summary
+            </button>
             <div>
               <h2 className="text-lg font-semibold text-slate-900">Player Characters</h2>
               <p className="mt-2 text-sm text-slate-600">Active characters in this campaign.</p>
@@ -1705,6 +1714,121 @@ export default function SessionDetailPage() {
           </aside>
         </div>
       </div>
+      {printSummaryOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 print:static print:block print:bg-white print:px-0">
+          <div className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-xl print:max-h-none print:max-w-none print:overflow-visible print:rounded-none print:shadow-none">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-6 print:hidden">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-900">Session Summary</h2>
+                <p className="mt-1 text-sm text-slate-600">Preview before printing.</p>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  Print
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPrintSummaryOpen(false)}
+                  className="rounded border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="overflow-y-auto p-6 print:overflow-visible print:p-0">
+              <div className="space-y-6 print:space-y-6">
+                <header className="border-b border-slate-200 pb-4 print:pb-3">
+                  <h1 className="text-2xl font-semibold text-slate-900">Session Summary</h1>
+                  <div className="mt-2 space-y-1 text-sm text-slate-600">
+                    {campaign && <p>Campaign: {campaign.name}</p>}
+                    {session && <p>Session: {session.name}</p>}
+                    <p>Notes: {chronologicalNotes.length}</p>
+                  </div>
+                </header>
+
+                <section className="border-b border-slate-200 pb-5">
+                  <h2 className="text-lg font-semibold text-slate-900">Session NPCs</h2>
+                  {sessionNpcSummaries.length === 0 ? (
+                    <p className="mt-2 text-sm text-slate-500">No NPCs mentioned in this session.</p>
+                  ) : (
+                    <ul className="mt-3 space-y-1 text-sm text-slate-700">
+                      {sessionNpcSummaries.map(({ npc, count }) => (
+                        <li key={npc.id}>
+                          {npc.name}{npc.race ? `, ${npc.race}` : ''} ({count})
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+
+                <section>
+                  <h2 className="text-lg font-semibold text-slate-900">Notes</h2>
+                {chronologicalNotes.length === 0 ? (
+                  <p className="mt-2 text-sm text-slate-500">No notes for this session.</p>
+                ) : (
+                  <div className="mt-4 space-y-6">
+                    {chronologicalNotes.map((note) => {
+                      const ingameTimestamp = formatIngameTimestamp(note);
+                      const printableContent = note.content?.startsWith(`${note.title}\n`)
+                        ? note.content.slice(note.title.length).trimStart()
+                        : note.content;
+                      return (
+                        <article key={note.id} className="border-b border-slate-200 pb-5 last:border-b-0 print:break-inside-avoid">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <h2 className="text-lg font-semibold text-slate-900">{note.title}</h2>
+                              <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
+                                {ingameTimestamp && <span>{ingameTimestamp}</span>}
+                                <span>
+                                  {new Date(note.created_at).toLocaleString('en-GB', {
+                                    day: '2-digit',
+                                    month: '2-digit',
+                                    year: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                    hour12: false,
+                                  })}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          {printableContent && (
+                            <p className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-700">{printableContent}</p>
+                          )}
+                          {(note.note_tags.length > 0 || (note.note_npcs ?? []).length > 0 || (note.note_player_characters ?? []).length > 0) && (
+                            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                              {note.note_tags.map((nt) => (
+                                <span key={nt.tags.id} className="rounded-full bg-blue-100 px-2 py-1 font-medium text-blue-700 print:border print:border-slate-300 print:bg-white print:text-slate-700">
+                                  {nt.tags.name}
+                                </span>
+                              ))}
+                              {(note.note_npcs ?? []).map((nn) => (
+                                <span key={nn.npcs.id} className="rounded-full bg-amber-100 px-2 py-1 font-medium text-amber-800 print:border print:border-slate-300 print:bg-white print:text-slate-700">
+                                  NPC: {nn.npcs.name}
+                                </span>
+                              ))}
+                              {(note.note_player_characters ?? []).map((npc) => (
+                                <span key={npc.player_characters.id} className="rounded-full bg-emerald-100 px-2 py-1 font-medium text-emerald-800 print:border print:border-slate-300 print:bg-white print:text-slate-700">
+                                  PC: {npc.player_characters.name}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {combatModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4"
